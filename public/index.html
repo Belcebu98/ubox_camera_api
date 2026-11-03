@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UBox Camera Stream</title>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, sans-serif;
+      background: #0b0f14;
+      color: #e6edf3;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 340px;
+      gap: 16px;
+      padding: 16px;
+      max-width: 1400px;
+      margin: auto;
+    }
+    .card {
+      background: #111823;
+      border: 1px solid #22303f;
+      border-radius: 12px;
+      padding: 16px;
+    }
+    h1 { font-size: 20px; margin: 0 0 16px; }
+    h2 { font-size: 15px; margin: 0 0 12px; color: #9fb3c8; }
+    video {
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: #000;
+      border-radius: 8px;
+    }
+    label {
+      display: block;
+      font-size: 13px;
+      margin: 12px 0 6px;
+      color: #9fb3c8;
+    }
+    input {
+      width: 100%;
+      padding: 10px;
+      border-radius: 8px;
+      border: 1px solid #2c3a4b;
+      background: #0b0f14;
+      color: #e6edf3;
+    }
+    .row { display: flex; gap: 8px; margin-top: 12px; }
+    button {
+      flex: 1;
+      padding: 10px;
+      border: 0;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .start { background: #1f883d; color: white; }
+    .stop { background: #b62324; color: white; }
+    .status {
+      font-family: ui-monospace, monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      background: #0b0f14;
+      border: 1px solid #22303f;
+      border-radius: 8px;
+      padding: 10px;
+      max-height: 300px;
+      overflow: auto;
+    }
+    .badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      background: #22303f;
+    }
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <section class="card">
+      <h1>UBox Camera Stream</h1>
+      <video id="video" controls muted autoplay playsinline></video>
+
+      <div class="row">
+        <button id="play" class="start">Reproducir HLS</button>
+        <button id="stop" class="stop">Detener stream</button>
+      </div>
+
+      <label for="manifest">URL del manifest HLS</label>
+      <input id="manifest" value="/api/stream/hls/index.m3u8">
+      <p style="font-size:12px;color:#8b98a5">
+        Ajusta esta URL al manifest exacto que genera tu módulo <code>h264-hls.js</code>.
+      </p>
+    </section>
+
+    <aside class="card">
+      <h2>Control</h2>
+
+      <label for="uid">UID de cámara</label>
+      <input id="uid" placeholder="Ej. ABC123456789">
+
+      <label for="streamIndex">Índice de stream</label>
+      <input id="streamIndex" value="0">
+
+      <div class="row">
+        <button id="start" class="start">Iniciar</button>
+      </div>
+
+      <h2 style="margin-top:20px">Estado</h2>
+      <div id="state" class="badge">Desconocido</div>
+
+      <h2 style="margin-top:20px">Eventos</h2>
+      <div id="events" class="status">Esperando eventos...</div>
+    </aside>
+  </div>
+
+<script>
+const video = document.getElementById('video');
+const manifestInput = document.getElementById('manifest');
+const uidInput = document.getElementById('uid');
+const streamIndexInput = document.getElementById('streamIndex');
+const stateBadge = document.getElementById('state');
+const eventsBox = document.getElementById('events');
+
+let hls = null;
+
+function renderStatus(status) {
+  stateBadge.textContent = status?.state ?? status?.status ?? 'Desconocido';
+  eventsBox.textContent = JSON.stringify(status, null, 2);
+}
+
+async function refreshStatus() {
+  try {
+    const response = await fetch('/api/stream/status');
+    renderStatus(await response.json());
+  } catch (error) {
+    stateBadge.textContent = 'Error';
+  }
+}
+
+function connectEvents() {
+  const source = new EventSource('/api/stream/events');
+
+  source.onmessage = (event) => {
+    try {
+      renderStatus(JSON.parse(event.data));
+    } catch {
+      eventsBox.textContent += `\n${event.data}`;
+    }
+  };
+
+  source.onerror = () => {
+    stateBadge.textContent = 'SSE desconectado';
+    setTimeout(connectEvents, 3000);
+    source.close();
+  };
+}
+
+function destroyHls() {
+  if (hls) {
+    hls.destroy();
+    hls = null;
+  }
+  video.removeAttribute('src');
+  video.load();
+}
+
+function playHls() {
+  destroyHls();
+
+  const manifestUrl = manifestInput.value.trim();
+
+  if (!manifestUrl) return;
+
+  if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    video.src = manifestUrl;
+    video.play();
+    return;
+  }
+
+  if (!window.Hls || !Hls.isSupported()) {
+    alert('Este navegador no soporta HLS.');
+    return;
+  }
+
+  hls = new Hls();
+  hls.loadSource(manifestUrl);
+  hls.attachMedia(video);
+  hls.on(Hls.Events.MANIFEST_PARSED, () => video.play());
+  hls.on(Hls.Events.ERROR, (_event, data) => {
+    if (data.fatal) {
+      console.error('HLS error:', data);
+      stateBadge.textContent = 'Error HLS';
+    }
+  });
+}
+
+document.getElementById('play').onclick = playHls;
+
+document.getElementById('stop').onclick = async () => {
+  destroyHls();
+
+  await fetch('/api/stream/stop', { method: 'POST' });
+  refreshStatus();
+};
+
+document.getElementById('start').onclick = async () => {
+  const uid = uidInput.value.trim();
+
+  if (!uid) {
+    alert('Introduce el UID de la cámara.');
+    return;
+  }
+
+  const response = await fetch('/api/stream/start', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      uid,
+      streamIndex: Number(streamIndexInput.value) || 0,
+    }),
+  });
+
+  const result = await response.json();
+  console.log('Stream start:', result);
+  refreshStatus();
+};
+
+refreshStatus();
+connectEvents();
+</script>
+</body>
+</html>

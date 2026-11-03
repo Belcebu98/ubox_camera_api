@@ -1,214 +1,229 @@
 const http = require('http');
-const fs = require('fs');
+const fs = require('fs/promises');
 const path = require('path');
+
+require('dotenv').config();
+
 const { GETrequest, POSTrequest, LOGINrequest } = require('./src/main/requests');
 const { logDebug, makeUbiaRequest, hoursAgo } = require('./src/main/helpers');
-const { buildMp4FromAnnexB } = require('./src/stream/h264-mp4');
 const { UBoxLiveStreamManager } = require('./src/stream/ubox-live-stream');
-require('dotenv').config();
 
-global.liveStreams = new UBoxLiveStreamManager({
+const STORED_LOGIN_PATH = path.join(process.cwd(), '.storedLogin.json');
+const PUBLIC_DIR = path.join(__dirname, 'public');
+const DEBUG_MODE = process.env.debug_mode === 'true';
+
+const state = {
+  user: null,
+  liveStreams: new UBoxLiveStreamManager({
     dumpDir: path.join(__dirname, 'stream-dumps'),
     logDir: path.join(__dirname, 'stream-logs'),
-    enableSessionLogs: process.env.debug_mode !== 'false',
-    enableDumpFiles: process.env.debug_mode !== 'false',
-});
+    enableSessionLogs: DEBUG_MODE,
+    enableDumpFiles: DEBUG_MODE,
+  }),
+};
 
-require('dotenv').config();
+// Permite que requests.js siga funcionando sin reescribir todo ahora.
+global.userdata = null;
+global.liveStreams = state.liveStreams;
 
-async function initializeLogin() {
-    let loginCredentials;
+async function readStoredLogin() {
+  try {
+    const raw = await fs.readFile(STORED_LOGIN_PATH, 'utf8');
+    const data = JSON.parse(raw);
 
-    if (fs.existsSync('.storedLogin.json')) {
-        console.log('Saved login was found, attempting to load...')
-        loginCredentials = JSON.parse(fs.readFileSync('.storedLogin.json'));
+    const valid =
+      data?.file_created_by_ubox_camera_api === 1 &&
+      data?.login_time &&
+      typeof data?.token_valid_hours === 'number';
 
-        if (loginCredentials && loginCredentials.file_created_by_ubox_camera_api && loginCredentials.login_time && loginCredentials.token_valid_hours && loginCredentials.file_created_by_ubox_camera_api == 1) {
-            let hoursSinceLogin = hoursAgo(loginCredentials.login_time);
-            logDebug(`It has been ${hoursSinceLogin} hours since login, the token is valid for ${loginCredentials.token_valid_hours} hours.`);
-            if (hoursSinceLogin < loginCredentials.token_valid_hours) {
-                global.userdata = loginCredentials;
-                let login_validity = await checkLoginValidity();
-                if (login_validity == true) {
-                    console.log('Loaded saved login credentials.');
-                    if (process.env.debug_mode == 'true') {
-                        logDebug(JSON.stringify(loginCredentials));
-                    }
-                } else {
-                    console.log('Stored Login Is Not Working, attempting new login...')
-                    fs.unlinkSync('.storedLogin.json')
-                    global.userdata = {};
-                    loginCredentials = await LOGINrequest();
-                    global.userdata = loginCredentials;
-                    let login_validity = await checkLoginValidity();
-                    if (login_validity == true) {
-                        console.log('Login succeeded, credentials have been saved!')
-                        if (process.env.debug_mode == 'true') {
-                            logDebug(JSON.stringify(loginCredentials));
-                        }
-                    } else {
-                        console.error('Login failed!');
-                        process.exit(1);
-                    }
-                }
-            } else {
-                console.log('Stored Login Is Expired, attempting new login...')
-                fs.unlinkSync('.storedLogin.json')
-                loginCredentials = await LOGINrequest();
-                global.userdata = loginCredentials;
-                let login_validity = await checkLoginValidity();
-                if (login_validity == true) {
-                    console.log('Login succeeded, credentials have been saved!')
-                    if (process.env.debug_mode == 'true') {
-                        logDebug(JSON.stringify(loginCredentials));
-                    }
-                } else {
-                    console.error('Login failed!');
-                    process.exit(1);
-                }
-            }
-        } else {
-            console.log('Stored Login File Is Corrupt/Invalid, attempting new login...')
-            fs.unlinkSync('.storedLogin.json')
-            loginCredentials = await LOGINrequest();
-            global.userdata = loginCredentials;
-            let login_validity = await checkLoginValidity();
-            if (login_validity == true) {
-                console.log('Login succeeded, credentials have been saved!')
-                if (process.env.debug_mode == 'true') {
-                    logDebug(JSON.stringify(loginCredentials));
-                }
-            } else {
-                console.error('Login failed!');
-                process.exit(1);
-            }
-        }
-    } else {
-        console.log('No login is stored, attempting login...');
-        loginCredentials = await LOGINrequest();
-        global.userdata = loginCredentials;
-        let login_validity = await checkLoginValidity();
-        if (login_validity == true) {
-            console.log('Login succeeded, credentials have been saved!')
-            if (process.env.debug_mode == 'true') {
-                logDebug(JSON.stringify(loginCredentials));
-            }
-        } else {
-            console.error('Login failed!');
-            process.exit(1);
-        }
-    }
+    if (!valid) return null;
 
-    return loginCredentials;
+    if (hoursAgo(data.login_time) >= data.token_valid_hours) return null;
+
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+async function saveLogin(credentials) {
+  await fs.writeFile(STORED_LOGIN_PATH, JSON.stringify(credentials, null, 2));
+}
+
+async function removeStoredLogin() {
+  try {
+    await fs.unlink(STORED_LOGIN_PATH);
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.error(error);
+  }
+}
+
+async function performLogin() {
+  const credentials = await LOGINrequest();
+  state.user = credentials;
+  global.userdata = credentials;
+
+  if (!(await checkLoginValidity())) {
+    throw new Error('Login completed but session validation failed.');
+  }
+
+  await saveLogin(credentials);
+  console.log('Login succeeded; credentials saved.');
+  return credentials;
 }
 
 async function checkLoginValidity() {
-    logDebug("Checking login validity...");
-    const ubia_response_device_list = await makeUbiaRequest({}, '/api/v2/user/device_list');
-    const isValidResponse = ubia_response_device_list && (ubia_response_device_list.code === 0 || ubia_response_device_list.code === '0');
-
-    if (isValidResponse) {
-        logDebug("Login is valid!");
-        return true;
-    }
-
-    logDebug("Login is not valid!", ubia_response_device_list);
-    if (ubia_response_device_list && ubia_response_device_list.code !== undefined) {
-        logDebug("API response code", ubia_response_device_list.code);
-    }
+  try {
+    const response = await makeUbiaRequest({}, '/api/v2/user/device_list');
+    return response?.code === 0 || response?.code === '0';
+  } catch {
     return false;
+  }
 }
 
-async function startServer() {
-    await initializeLogin();
+async function initializeLogin() {
+  const stored = await readStoredLogin();
 
-    const port = process.env.server_port || 3000;
+  if (stored) {
+    state.user = stored;
+    global.userdata = stored;
 
-    // Create the server
-    http.createServer(async function (req, res) {
-        logDebug("Incoming request", { method: req.method, url: req.url });
+    if (await checkLoginValidity()) {
+      console.log('Loaded valid stored login.');
+      return;
+    }
 
-        if (!global.userdata.token) {
-            res.writeHead(401, { 'Content-Type': 'text/html' });
-            res.write('Not Yet Logged In');
-            res.end();
-            return;
-        }
+    await removeStoredLogin();
+  }
 
-        const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
+  console.log('Logging in...');
+  await performLogin();
+}
 
-        if (parsedUrl.pathname.includes('/api/stream/hls')) {
-            switch (req.method) {
-                case 'GET':
-                    GETrequest(req, res);
-                    break;
+async function ensureValidSession() {
+  if (await checkLoginValidity()) return true;
 
-                case 'POST':
-                    POSTrequest(req, res);
-                    break;
+  console.log('Session expired; re-login...');
+  await removeStoredLogin();
+  state.user = null;
+  global.userdata = null;
 
-                default:
-                    logDebug("Invalid request method", req.method);
-                    res.writeHead(405, { 'Content-Type': 'text/html' });
-                    res.write('Method Not Allowed');
-                    res.end();
-                    break;
-            }
-        } else {
-            let login_validity = await checkLoginValidity();
-            if (login_validity == true) {
-                switch (req.method) {
-                    case 'GET':
-                        GETrequest(req, res);
-                        break;
+  try {
+    await performLogin();
+    return true;
+  } catch (error) {
+    console.error('Re-login failed:', error.message);
+    return false;
+  }
+}
 
-                    case 'POST':
-                        POSTrequest(req, res);
-                        break;
+function sendJson(res, status, payload) {
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+  });
+  res.end(JSON.stringify(payload));
+}
 
-                    default:
-                        logDebug("Invalid request method", req.method);
-                        res.writeHead(405, { 'Content-Type': 'text/html' });
-                        res.write('Method Not Allowed');
-                        res.end();
-                        break;
-                }
-            } else {
-                fs.unlinkSync('.storedLogin.json')
-                global.userdata = {};
-                loginCredentials = await LOGINrequest();
-                global.userdata = loginCredentials;
-                let login_validity = await checkLoginValidity();
-                if (login_validity == true) {
-                    console.log('Re-Login succeeded, credentials have been saved!')
-                    if (process.env.debug_mode == 'true') {
-                        logDebug(loginCredentials);
-                    }
-                    switch (req.method) {
-                        case 'GET':
-                            GETrequest(req, res);
-                            break;
-
-                        case 'POST':
-                            POSTrequest(req, res);
-                            break;
-
-                        default:
-                            logDebug("Invalid request method", req.method);
-                            res.writeHead(405, { 'Content-Type': 'text/html' });
-                            res.write('Method Not Allowed');
-                            res.end();
-                            break;
-                    }
-                } else {
-                    console.error('Login failed!');
-                    process.exit(1);
-                }
-            }
-        }
-    }).listen(port, () => {
-        console.log(`Server running on port ${port}`);
+async function serveStatic(res, filePath, contentType) {
+  try {
+    const content = await fs.readFile(filePath);
+    res.writeHead(200, {
+      'content-type': contentType,
+      'cache-control': 'no-store',
     });
+    res.end(content);
+  } catch {
+    sendJson(res, 404, { error: 'Not found' });
+  }
 }
 
-startServer();
+async function handleRequest(req, res) {
+  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  const pathname = url.pathname;
+
+  logDebug('Request', { method: req.method, pathname });
+
+  if (pathname === '/' || pathname === '/index.html') {
+    return serveStatic(res, path.join(PUBLIC_DIR, 'index.html'), 'text/html; charset=utf-8');
+  }
+
+  if (!state.user?.token) {
+    return sendJson(res, 401, { error: 'Not yet logged in' });
+  }
+
+  // HLS debe pasar directo: puede recibir múltiples peticiones de segmentos.
+  if (pathname.includes('/api/stream/hls')) {
+    if (req.method === 'GET') return GETrequest(req, res);
+    if (req.method === 'POST') return POSTrequest(req, res);
+    return sendJson(res, 405, { error: 'Method not allowed' });
+  }
+
+  const validSession = await ensureValidSession();
+  if (!validSession) {
+    return sendJson(res, 503, { error: 'Authentication unavailable' });
+  }
+
+  if (req.method === 'GET') return GETrequest(req, res);
+  if (req.method === 'POST') return POSTrequest(req, res);
+
+  return sendJson(res, 405, { error: 'Method not allowed' });
+}
+
+function startServer() {
+  const port = Number(process.env.server_port) || 3000;
+
+  const server = http.createServer(async (req, res) => {
+    try {
+      await handleRequest(req, res);
+    } catch (error) {
+      console.error('Unhandled request error:', error);
+
+      if (!res.headersSent) {
+        sendJson(res, 500, { error: 'Internal server error' });
+      } else {
+        res.end();
+      }
+    }
+  });
+
+  server.listen(port, () => {
+    console.log(`UBox Camera API running: http://localhost:${port}`);
+  });
+
+  const shutdown = (signal) => {
+    console.log(`Received ${signal}; shutting down...`);
+
+    server.close(async () => {
+      try {
+        await state.liveStreams.stop?.();
+      } catch (error) {
+        console.error(error);
+      }
+      process.exit(0);
+    });
+
+    setTimeout(() => process.exit(1), 10_000).unref();
+  };
+
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+  process.on('unhandledRejection', (reason) => {
+    console.error('Unhandled rejection:', reason);
+  });
+
+  process.on('uncaughtException', (error) => {
+    console.error('Uncaught exception:', error);
+  });
+}
+
+(async () => {
+  try {
+    await initializeLogin();
+    startServer();
+  } catch (error) {
+    console.error('Fatal startup error:', error);
+    process.exit(1);
+  }
+})();

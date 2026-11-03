@@ -1,190 +1,223 @@
-var sha1 = require('js-sha1');
+const crypto = require('crypto');
+const sha1 = require('js-sha1');
 const axios = require('axios');
+
 require('dotenv').config();
 
-// Helper function to log debug messages
+const UBIA_BASE_URL = 'https://portal.ubianet.com';
+const MAX_JSON_BODY_BYTES = 512 * 1024;
+const DEBUG_MODE = process.env.debug_mode === 'true';
+
 function logDebug(message, data) {
-    if (process.env.debug_mode == 'true') {
-        console.log(`[DEBUG] ${message}`, data || '');
-    }
+  if (!DEBUG_MODE) return;
+  console.log(`[DEBUG] ${message}`, data ?? '');
 }
 
-// HMAC SHA-1 with Base64 Encoding
+function redactHeaders(headers = {}) {
+  const sensitive = ['authorization', 'cookie', 'x-ubia-auth-usertoken'];
+
+  return Object.fromEntries(
+    Object.entries(headers).map(([key, value]) => [
+      key,
+      sensitive.includes(key.toLowerCase()) ? '[REDACTED]' : value,
+    ])
+  );
+}
+
 function hmacSha1Base64(data) {
-    var hash = sha1.hmac.array('', data);
-    var base_hash = Buffer.from(hash).toString('base64');
-    // Replace the last character with a comma
-    const modifiedSignature =  base_hash.replace(/.$/, ',');
-    
-    return modifiedSignature;
+  const hash = sha1.hmac.array('', data);
+  const base64 = Buffer.from(hash).toString('base64');
+
+  // Requisito observado del protocolo UBox/Ubia.
+  return `${base64.slice(0, -1)},`;
 }
 
 function json(res, status, payload) {
-  const body = JSON.stringify(payload, null, 2);
   res.writeHead(status, {
-    "content-type": "application/json; charset=utf-8",
-    "cache-control": "no-store",
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
   });
-  res.end(body);
+  res.end(JSON.stringify(payload, null, 2));
 }
 
-function text(res, status, body, type = "text/plain; charset=utf-8") {
+function text(res, status, body, type = 'text/plain; charset=utf-8') {
   res.writeHead(status, {
-    "content-type": type,
-    "cache-control": "no-store",
+    'content-type': type,
+    'cache-control': 'no-store',
   });
   res.end(body);
 }
 
 function binary(res, status, body, type) {
   res.writeHead(status, {
-    "content-type": type,
-    "content-length": body.length,
-    "cache-control": "no-store",
+    'content-type': type,
+    'content-length': body.length,
+    'cache-control': 'no-store',
   });
   res.end(body);
 }
 
-// Function to generate a random string for the device token
-function generateRandomString(length) {
-    const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    let result = '';
-    for (let i = 0; i < length; i++) {
-        result += characters.charAt(Math.floor(Math.random() * characters.length));
-    }
-    return result;
+function generateRandomString(length = 32) {
+  return crypto.randomBytes(Math.ceil(length * 0.75))
+    .toString('base64url')
+    .slice(0, length);
 }
 
-async function makeUbiaRequest(body, url) {
-    logDebug("Preparing request", { body, url });
+async function makeUbiaRequest(body, url, userToken) {
+  const token = userToken ?? global.userdata?.token ?? '';
 
-    const headers = {
-        "method": "POST",
-        "scheme": "https",
-        "path": url,
-        "authority": "portal.ubianet.com",
-        "accept": "*/*",
-        "content-type": "application/json",
-        "x-ubia-auth-usertoken": global.userdata?.token || ''
+  const headers = {
+    method: 'POST',
+    scheme: 'https',
+    path: url,
+    authority: 'portal.ubianet.com',
+    accept: '*/*',
+    'content-type': 'application/json',
+    'x-ubia-auth-usertoken': token,
+  };
+
+  logDebug('Ubia request', {
+    url,
+    bodyKeys: body && typeof body === 'object' ? Object.keys(body) : undefined,
+    headers: redactHeaders(headers),
+  });
+
+  try {
+    const response = await axios.post(`${UBIA_BASE_URL}${url}`, body, {
+      headers,
+      timeout: 15_000,
+    });
+
+    logDebug('Ubia response', {
+      status: response.status,
+      code: response.data?.code,
+      msg: response.data?.msg,
+    });
+
+    return response.data;
+  } catch (error) {
+    if (error.response) {
+      return {
+        code: error.response.status,
+        msg: error.response.data,
+      };
+    }
+
+    if (error.request) {
+      return { code: 504, msg: 'Ubia API did not respond' };
+    }
+
+    return { code: 500, msg: error.message };
+  }
+}
+
+function readBody(req, maxBytes = MAX_JSON_BODY_BYTES) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    let settled = false;
+
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      req.removeAllListeners('data');
+      req.removeAllListeners('end');
+      req.destroy();
+      reject(error);
     };
 
-    logDebug("Request headers", headers);
+    req.on('data', (chunk) => {
+      size += chunk.length;
 
-    try {
-        const response = await axios.post(`https://portal.ubianet.com${url}`, body, { headers });
-        logDebug("Received response", { status: response.status, data: response.data });
-
-        if (response.data.code === 0) {
-            return response.data;
-        } else {
-            logDebug("API returned error", response.data.msg);
-            return response.data;
-        }
-    } catch (error) {
-        if (error.response) {
-            logDebug("Error response from API", {
-                status: error.response.status,
-                data: error.response.data
-            });
-            return { "code": error.response.status, "msg": error.response.data };
-        } else if (error.request) {
-            logDebug("No response received from API", error.request);
-            return { "code": 500, "msg": 'Unknown Error' };
-        } else {
-            logDebug("Error during request setup", error.message);
-            return { "code": 500, "msg": error.message };
-        }
-    }
-}
-
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    let body = "";
-    req.on("data", (chunk) => {
-      body += chunk;
-      if (body.length > 512 * 1024) {
-        reject(new Error("Request body is too large"));
-        req.destroy();
+      if (size > maxBytes) {
+        fail(new Error(`Request body exceeds ${maxBytes} bytes`));
+        return;
       }
+
+      chunks.push(chunk);
     });
-    req.on("end", () => {
+
+    req.on('end', () => {
+      if (settled) return;
+      settled = true;
+
+      const raw = Buffer.concat(chunks).toString('utf8');
+
+      if (!raw) return resolve({});
+
       try {
-        resolve(body ? JSON.parse(body) : {});
+        resolve(JSON.parse(raw));
       } catch {
-        reject(new Error("Invalid JSON body"));
+        reject(new Error('Invalid JSON body'));
       }
     });
-    req.on("error", reject);
+
+    req.on('error', fail);
   });
 }
 
-function hoursAgo(isoString) {
-  const then = new Date(isoString);
-  const now = new Date();
-  const diffMs = now - then;
-  return diffMs / (1000 * 60 * 60);
+function hoursAgo(dateValue) {
+  const then = new Date(dateValue);
+
+  if (Number.isNaN(then.getTime())) {
+    throw new Error(`Invalid date: ${JSON.stringify(dateValue)}`);
+  }
+
+  return (Date.now() - then.getTime()) / (1000 * 60 * 60);
 }
 
 function normalizeUbiaStatusCode(code) {
-    const parsed = Number(code);
-    if (Number.isInteger(parsed) && parsed >= 100 && parsed < 600) {
-        return parsed;
-    }
-    if (parsed === 0 || code === 0 || code === '0') {
-        return 200;
-    }
-    return 502;
+  if (code === 0 || code === '0') return 200;
+
+  const parsed = Number(code);
+
+  if (Number.isInteger(parsed) && parsed >= 100 && parsed < 600) {
+    return parsed;
+  }
+
+  return 502;
 }
 
 function writeUbiaJsonResponse(res, ubiaResponse) {
-    const payload = ubiaResponse?.data !== undefined ? ubiaResponse.data : ubiaResponse;
-    const statusCode = normalizeUbiaStatusCode(ubiaResponse?.code);
-    res.writeHead(statusCode, { 'Content-Type': 'application/json' });
-    res.write(JSON.stringify(payload));
-    res.end();
+  const payload = ubiaResponse?.data !== undefined
+    ? ubiaResponse.data
+    : ubiaResponse;
+
+  json(res, normalizeUbiaStatusCode(ubiaResponse?.code), payload);
 }
 
-// ---------------------------------------------------------------------------
-// RTSP / HLS on-off toggles
-// ---------------------------------------------------------------------------
-// These lazily require the stream modules INSIDE the function body (not at
-// the top of this file) on purpose: h264-rtsp.js and h264-hls.js both
-// require helpers.js for logDebug, so requiring them back at the top of
-// this file would create a circular require. Deferring the require until
-// the function is actually called sidesteps that entirely.
-
 function setRtspEnabled(enabled) {
-    const rtsp = require('./h264-rtsp.js');
-    return enabled ? rtsp.enableRtsp() : rtsp.disableRtsp();
+  const rtsp = require('./h264-rtsp.js');
+  return enabled ? rtsp.enableRtsp() : rtsp.disableRtsp();
 }
 
 function isRtspEnabled() {
-    return require('./h264-rtsp.js').isRtspEnabled();
+  return require('./h264-rtsp.js').isRtspEnabled();
 }
 
 function setHlsEnabled(enabled) {
-    const hls = require('./h264-hls.js');
-    return enabled ? hls.enableHls() : hls.disableHls();
+  const hls = require('./h264-hls.js');
+  return enabled ? hls.enableHls() : hls.disableHls();
 }
 
 function isHlsEnabled() {
-    return require('./h264-hls.js').isHlsEnabled();
+  return require('./h264-hls.js').isHlsEnabled();
 }
 
 module.exports = {
-    hmacSha1Base64,
-    generateRandomString,
-    makeUbiaRequest,
-    logDebug,
-    json,
-    text,
-    binary,
-    readBody,
-    hoursAgo,
-    normalizeUbiaStatusCode,
-    writeUbiaJsonResponse,
-    setRtspEnabled,
-    isRtspEnabled,
-    setHlsEnabled,
-    isHlsEnabled
-}
+  hmacSha1Base64,
+  generateRandomString,
+  makeUbiaRequest,
+  logDebug,
+  json,
+  text,
+  binary,
+  readBody,
+  hoursAgo,
+  normalizeUbiaStatusCode,
+  writeUbiaJsonResponse,
+  setRtspEnabled,
+  isRtspEnabled,
+  setHlsEnabled,
+  isHlsEnabled,
+};

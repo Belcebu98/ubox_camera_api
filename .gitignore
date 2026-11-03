@@ -1,8 +1,84 @@
-.DS_STORE
-.DS_Store
-api_docs/convert_headers.py
+# Dependencias
+node_modules/
+
+# Credenciales y configuración local
 .env
-node_modules
+.env.*
+!.env.example
+!.env.sample
 .storedLogin.json
-stream-logs
-stream-dumps
+.storedLogin.json.*
+
+# Configuración privada de npm
+.npmrc
+
+# Claves y certificados privados
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Capturas y registros del stream
+stream-dumps/
+stream-logs/
+live-session-logs/
+recordings/
+captures/
+
+# Vídeo y capturas de tráfico generadas
+*.h264
+*.h265
+*.hevc
+*.mp4
+*.mkv
+*.ts
+*.pcap
+*.pcapng
+
+# Logs y diagnósticos
+logs/
+*.log
+*.jsonl
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+report.*.json
+
+# Cachés y archivos temporales
+.npm/
+.cache/
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+
+# Cobertura de pruebas
+coverage/
+.nyc_output/
+
+# Compilación de módulos nativos
+build/
+*.node
+
+# Archivos de editores
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Windows y macOS
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+$RECYCLE.BIN/
+
+# Copias comprimidas del proyecto
+*.zip
+*.rar
+*.7z
+*.tar
+*.tar.gz
