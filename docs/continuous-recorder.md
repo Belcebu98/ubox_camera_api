@@ -1,28 +1,15 @@
-# changes_funcionality3 — optional continuous recorder
+# Servicio integrado — changes_funcionality4
 
-Stop npm start before launching this service: it uses the same port. The existing server.js remains unchanged as a rollback path.
+`npm start` inicia API, visor, grabacion automatica y telemetria en un unico proceso y puerto. No es necesario arrancar server.js en paralelo. `npm run start:legacy` conserva el servidor anterior; no ejecutar ambos sobre el mismo puerto. `node recorder-server.js` y start-recorder.cmd siguen siendo equivalentes al nuevo arranque.
 
-Run `node recorder-server.js` or start-recorder.cmd on Windows.
+Conserva tu .env real; consulta .env.example para copiar ajustes sin sobrescribir credenciales. Destino predeterminado en Windows: E:/camaras. Si la cuenta tiene varias camaras, recording_camera_uid debe seleccionar exactamente una. El panel de bateria muestra todos los UIDs recibidos; la grabacion simultanea no esta implementada.
 
-Local .env settings:
+El visor se sirve en /. La API original comparte global.liveStreams y la sesion de login con el grabador. POST /api/stream/* y /api/nvr/* se bloquean para que una llamada manual no pare la grabacion automatica. Los endpoints GET de estado, eventos y video siguen disponibles. Las operaciones de nube pasan a los handlers existentes.
 
-```dotenv
-recording_dir=E:/camaras
-server_port=8020
-server_host=127.0.0.1
-recording_camera_uid=YOUR_CAMERA_UID
-recording_stream_index=0
-recording_fps=15
-recording_segment_seconds=300
-recording_min_free_gb=2
-```
+Se archiva H.264 primario sin recodificar y se finaliza MP4 con stream-copy. HEVC y audio no se graban. recording_fps fija la temporizacion: comprobar velocidad con reloj real. Indice 0 no garantiza HD; verificar la fuente. Los tramos se cierran al primer IDR despues de recording_segment_seconds. Archivos parciales pueden permanecer tras errores/cortes de luz y no se recuperan automaticamente. No hay garantia de captura sin huecos. Los MP4 terminados aparecen en el visor; hay zoom digital y desplazamiento sin mover la camara.
 
-If there is exactly one camera, recording_camera_uid may be omitted. No camera quality mapping is assumed: index 0 is configurable and must be verified against the mobile app.
+Telemetria: GET /api/nvr/cameras usa cache. Consulta a UBox por defecto cada 300 segundos; el navegador solo refresca la cache. Ausencia de dato no significa 0 %. is_battery_charging solo se muestra cuando es interpretable. fetchedAt es hora de consulta, NO de medicion; latestActivityAt no es fecha de bateria. La API puede devolver datos antiguos incluso en respuestas nuevas. El umbral bajo solo avisa, no apaga el stream. Validar consumo y aportacion solar antes de usar captura 24/7.
 
-This version archives the primary H.264 video without re-encoding, then uses ffmpeg stream-copy to finalize MP4 files. HEVC recording and audio are NOT implemented. The existing configured fixed FPS muxer is used: verify playback speed against a clock before relying on recordings. Files start on an IDR frame; a new file is opened on the first IDR after the requested segment duration. Names use server-local date/time, milliseconds and a collision-resistant suffix. The server clock is the reference, not an independently verified camera clock.
+No se borra el historial. Se pausa grabacion bajo la reserva libre. Servicio sin autenticacion propia: por defecto loopback, no exponer directamente a Internet. Registros pueden contener UIDs e IPs aunque se oculten tokens y prefijos.
 
-No deletion/retention policy is enabled. Recording pauses below the configured free-space reserve. Logs and recordings can contain camera identifiers and IP addresses. Do not expose this unauthenticated service to the Internet.
-
-Only finalized MP4 files are listed. Partial/processing files are kept on finalization failures for manual recovery, not overwritten or automatically recovered. A power failure can lose the last open portion. There is no frame-perfect or gap-free recording guarantee. Single active camera only.
-
-Browser controls provide digital zoom, pan, live playback and completed-recording playback. They never send camera movement commands. Digital zoom does not create additional detail or modify the stored file. Closing the browser does not stop capture. Run both a full segment test and repeated restart tests before unattended use.
+Prueba local: detener el servidor anterior, actualizar la rama, revisar .env, ejecutar npm test y npm start, abrir http://localhost:8020, comprobar estado y bateria contra la app. Grabar al menos un tramo completo, reproducirlo y comprobar duracion, zoom y cierre con Ctrl+C. Las pruebas sinteticas/de handlers no sustituyen pruebas con camara, HDD Windows y ejecucion prolongada.
