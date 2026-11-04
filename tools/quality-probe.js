@@ -25,6 +25,7 @@ function attachProbe(session,onFrame){
 async function probeIndex({manager,uid,index,seconds,fps,outDir}){
   const started=Date.now();let frames=0,bytes=0,keyframes=0,firstFrameAt=null,lastFrameAt=null,sps=null,pps=null,codec=null,width=null,height=null,streamFormat=null,receiveGaps=0;
   const file=path.join(outDir,`stream-${index}.mp4`),temporary=file+'.partial.mp4',processing=file+'.processing.mp4';
+  await fsp.unlink(temporary).catch(()=>{});await fsp.unlink(processing).catch(()=>{});
   const stream=fs.createWriteStream(temporary,{flags:'wx'}),muxer=new LiveMp4Muxer({fps});
   await manager.start({uid},{streamIndex:index,fps,forceRestart:true});
   const session=manager.session;
