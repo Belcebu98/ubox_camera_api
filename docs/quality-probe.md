@@ -1,56 +1,52 @@
-# Sonda de calidad de video — changes_funcionality9
+# Registro de camaras y verificacion de stream — changes_funcionality9
 
-Esta herramienta mide lo que entrega cada indice de stream de la camara. No aumenta la resolucion, no cambia `recording_stream_index`, no activa RTSP/Frigate y no modifica grabaciones existentes.
+La sonda ahora recuerda las camaras detectadas y comprueba si una UID esta enviando video antes de medir calidad. No activa RTSP, no cambia `recording_stream_index` ni modifica grabaciones.
+
+## Registro local
+
+`data/cameras.json` guarda UID, primera/ultima deteccion, origen y resultado del ultimo chequeo de stream. Esta excluido de Git y no guarda credenciales, tokens ni cookies.
+
+```json
+{
+  "schemaVersion": 1,
+  "cameras": [
+    {
+      "uid": "UID_REAL",
+      "firstSeenAt": "2026-11-04T18:59:00Z",
+      "lastSeenAt": "2026-11-04T18:59:00Z",
+      "lastStreamCheckAt": "2026-11-04T18:59:10Z",
+      "lastStreamActive": true,
+      "source": "active-session"
+    }
+  ]
+}
+```
+
+## Seleccion de UID
+
+Orden: `--uid`; UID de una sesion activa; ultima camara guardada; unica camara de `device_list`. Con varias camaras guardadas, sin sesion activa y sin `--uid`, la sonda se detiene para evitar elegir la camara equivocada.
+
+## Verificacion de stream
+
+Antes de probar indices, la sonda abre brevemente el indice 0 y espera hasta 10 segundos. Considera el stream activo solo si recibe al menos un fotograma H.264 y el ultimo llego hace menos de 5 segundos.
+
+```json
+{
+  "uid": "UID_REAL",
+  "streamActive": true,
+  "frames": 42,
+  "format": "h264",
+  "lastFrameAgeMs": 120,
+  "meaning": "Camera sent at least one H.264 picture frame during the check"
+}
+```
+
+Si no recibe fotogramas, escribe `streamActive: false`, no prueba calidad y guarda el resultado. Esto confirma recepcion de video en esa comprobacion; no garantiza continuidad futura, calidad, audio ni ausencia de cortes posteriores.
 
 ## Ejecucion
 
-Deten el grabador antes de probar. Desde la raiz del proyecto:
-
 ```powershell
-node tools/quality-probe.js --indexes 0,1,2,3 --seconds 25 --uid UID_REAL
+node tools/quality-probe.js --indexes 0,1,2,3 --seconds 25
 ```
 
-Si la cuenta tiene exactamente una camara, `--uid` es opcional. Duracion admitida por indice: 10–120 segundos. Salida por defecto:
-
-```text
-data/diagnostics/quality-probe/
-  stream-0.mp4
-  stream-0.json
-  stream-1.mp4
-  stream-1.json
-  ...
-  quality-report.json
-```
-
-Puedes limitar la prueba:
-
-```powershell
-node tools/quality-probe.js --indexes 0,1 --seconds 20
-```
-
-## Resultados
-
-Cada `stream-N.json` incluye:
-
-- `width` y `height`: dimensiones declaradas en SPS H.264.
-- `measuredFps`: fotogramas recibidos por segundo durante la prueba.
-- `videoBitrateKbps`: bytes de video por segundo.
-- `frames`, `keyframes` y `gaps`: volumen y continuidad.
-- `sampleFile`: MP4 corto para comparacion visual.
-- `measurement`: siempre `camera-stream-frame-count`.
-
-`quality-report.json` propone el indice con mayor `resolucion x FPS medido`, pero esa sugerencia no cambia la configuracion. Compara los MP4 antes de decidir: un indice puede tener mas resolucion nominal pero mas huecos, menos FPS reales o peor imagen.
-
-## Limites importantes
-
-- La sonda no puede crear detalle ni subir la resolucion nativa de la camara.
-- Un indice mayor no garantiza HD; puede ser un substream o no estar disponible.
-- `measuredFps` es tasa de recepcion en una prueba corta, no un ajuste garantizado de la camara.
-- La resolucion procede de SPS y puede reflejar dimensiones codificadas o recortadas.
-- La sonda no decodifica cada fotograma ni mide nitidez, exposicion ni calidad subjetiva.
-- No ejecutes la sonda mientras el grabador este usando la misma camara: pueden competir por la sesion.
-- La herramienta es solo diagnostico; no integra audio G.726 ni reenvia RTSP.
-
-## Despues de la prueba
-
-Revisa el MP4 de cada indice y elige el mejor equilibrio entre detalle, FPS real, bitrate y estabilidad. Solo despues cambia manualmente `recording_stream_index` en `.env`, reinicia el servicio y verifica un tramo completo. El siguiente paso, RTSP para Frigate, usara el indice elegido y transcodificara G.726 a AAC; no esta implementado en esta entrega.
+`--uid` sigue disponible para forzar una camara concreta. La sonda no aumenta resolucion, no cambia grabacion y no reenvia RTSP.
