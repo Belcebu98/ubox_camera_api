@@ -1,51 +1,44 @@
-# Dependencias
+# Dependencias y secretos
 node_modules/
-
-# Credenciales y configuración local
 .env
 .env.*
 !.env.example
 !.env.sample
 .storedLogin.json
 .storedLogin.json.*
-
-# Configuración privada de npm
 .npmrc
-
-# Claves y certificados privados
 *.key
 *.pem
 *.p12
 *.pfx
 
-# Capturas y registros del stream
+# Estado y registros PRIVADOS (no excluye docs ni ejemplos de API)
+/data/
+/logs/
 stream-dumps/
 stream-logs/
 live-session-logs/
 recordings/
 captures/
+_diagnostics/
+*.jsonl
+*.log
+report.*.json
 
-# Vídeo y capturas de tráfico generadas
+# Medios y capturas privadas
 *.h264
 *.h265
 *.hevc
 *.mp4
 *.mkv
 *.ts
+*.wav
 *.pcap
 *.pcapng
+type-0x13-candidate.bin
+ubox-audio-candidate-base64.txt
 
-# Logs y diagnósticos
-logs/
-*.log
-*.jsonl
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
-report.*.json
-
-# Cachés y archivos temporales
+# Cache, compilacion y temporales
 .npm/
 .cache/
 tmp/
@@ -53,30 +46,20 @@ temp/
 *.tmp
 *.temp
 *.bak
-
-# Cobertura de pruebas
 coverage/
 .nyc_output/
-
-# Compilación de módulos nativos
 build/
 *.node
-
-# Archivos de editores
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-
-# Windows y macOS
 Thumbs.db
 ehthumbs.db
 Desktop.ini
 .DS_Store
 $RECYCLE.BIN/
-
-# Copias comprimidas del proyecto
 *.zip
 *.rar
 *.7z
