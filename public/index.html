@@ -3,82 +3,93 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>UBox · Control de cámaras</title>
+<title>UBox · Grabador local</title>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.13/dist/hls.min.js"></script>
 <style>
-:root{color-scheme:dark;font-family:system-ui,sans-serif;background:#0b1220;color:#e5edf9}*{box-sizing:border-box}body{margin:0}main{max-width:1400px;margin:auto;padding:24px}header,.controls{display:flex;gap:12px;align-items:center;flex-wrap:wrap}header{justify-content:space-between}h1{font-size:24px}.grid{display:grid;grid-template-columns:2fr 1fr;gap:20px}.card{background:#141f32;border:1px solid #293852;border-radius:14px;padding:20px;margin-top:20px}video{width:100%;aspect-ratio:16/9;background:black;border-radius:8px}label{display:block;margin:12px 0 6px}input,select,button{font:inherit;border-radius:8px;padding:10px;border:1px solid #425574;background:#0d1728;color:inherit}input,select{width:100%}button{cursor:pointer}button:disabled{opacity:.5;cursor:wait}.primary{background:#17653d}.danger{background:#83313c}pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:340px;overflow:auto;font-size:12px}#message{min-height:24px;color:#ffcf86}.hint{color:#9faec5;font-size:13px}@media(max-width:850px){.grid{grid-template-columns:1fr}main{padding:12px}}
+:root{color-scheme:dark;font-family:system-ui,sans-serif;background:#0b1220;color:#e5edf9}*{box-sizing:border-box}body{margin:0}main{max-width:1400px;margin:auto;padding:20px}.card{background:#141f32;padding:18px;border:1px solid #293852;border-radius:12px;margin:16px 0}.row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}button,select,input,a{font:inherit}button,select,input{background:#223451;color:inherit;border:1px solid #475d7c;border-radius:7px;padding:9px}button{cursor:pointer}button:disabled,input:disabled{opacity:.5;cursor:default}select{max-width:100%}a{color:#9accff}h1{font-size:24px}h2{font-size:18px}.hint{color:#aebbd0;font-size:13px}.error{color:#ffce86;white-space:pre-wrap;overflow-wrap:anywhere}.badge{display:inline-block;padding:5px 10px;border-radius:20px;background:#223451}.ok{background:#195239}.warn{background:#705126}#viewport{background:black;overflow:hidden;aspect-ratio:16/9;position:relative;touch-action:none}#viewport:fullscreen{width:100vw;height:100vh;aspect-ratio:auto}video{width:100%;height:100%;object-fit:contain;transform-origin:0 0;display:block}#overlay{position:absolute;inset:0;touch-action:none;cursor:grab}#overlay:active{cursor:grabbing}#seek{width:min(500px,70vw)}#files{flex:1;min-width:200px}#detail{overflow-wrap:anywhere}label{display:inline-flex;gap:8px;align-items:center}@media(max-width:600px){main{padding:10px}.card{padding:12px}.row{gap:8px}button{padding:8px}}
 </style>
 </head>
 <body><main>
-<header><h1>UBox · Cámaras</h1><span id="connection">Conectando eventos…</span></header>
-<p class="hint">Panel local de control. Sesión iniciada no significa que estén llegando imágenes.</p>
-<div id="message" role="alert"></div>
-<div class="grid"><section class="card">
-<video id="video" controls muted playsinline></video>
-<p id="playback">Reproductor detenido</p>
-<div class="controls"><button id="play">Reproducir</button><button id="pause">Cerrar reproductor</button></div>
-<p class="hint">HLS requiere que el backend genere segmentos válidos. Esta interfaz no corrige el transporte de vídeo.</p>
-<h2>Eventos</h2><pre id="events">Esperando eventos…</pre>
-</section><aside><section class="card">
-<h2>Control</h2><button id="reload">Actualizar cámaras</button>
-<label for="devices">Cámaras de la cuenta</label><select id="devices"><option value="">Selecciona una cámara</option></select>
-<label for="uid">UID</label><input id="uid" autocomplete="off" placeholder="Selecciona una cámara o introduce su UID">
-<label for="index">Índice solicitado al dispositivo</label><select id="index"><option>0</option><option>1</option><option>2</option><option>3</option></select>
-<label for="track">Pista del reproductor</label><select id="track"><option value="primary">Principal</option><option value="secondary">Secundaria</option></select>
-<p class="hint">La pista secundaria solo tendrá vídeo si el dispositivo la proporciona.</p>
-<div class="controls"><button id="start" class="primary">Iniciar sesión</button><button id="stop" class="danger">Detener sesión</button></div>
-</section><section class="card"><h2 id="state">Estado desconocido</h2><pre id="status"></pre></section></aside></div>
-</main><script>
+<header><h1>UBox · Grabación local</h1><p class="hint">El servicio recibe y graba automáticamente. Los controles de esta página solo afectan al visor.</p></header>
+<section class="card" aria-label="Estado del servidor">
+<div class="row"><span id="cameraState" class="badge">Cámara: consultando…</span><span id="recordState" class="badge">Grabación: consultando…</span></div>
+<p id="detail" class="hint"></p><p id="serviceError" class="error" role="status"></p><p id="recordError" class="error" role="status"></p>
+<p class="hint">Una cámara grabando por instancia. La telemetría de batería puede mostrar varias; no implica grabación simultánea. El aviso de batería baja no detiene la captura.</p>
+</section>
+<section class="card" aria-label="Visor">
+<div id="viewport"><video id="video" playsinline muted aria-label="Vídeo"></video><div id="overlay" aria-label="Usa la rueda para ampliar y arrastra para desplazar"></div></div>
+<p id="playback" aria-live="polite">Visor cerrado. La grabación del servidor no depende de esta página.</p>
+<div class="row"><button id="live">Ver directo / volver al directo</button><button id="pause" disabled>Pausar</button><button id="close" disabled>Cerrar visor</button><button id="full">Pantalla completa</button></div>
+<p id="playerError" class="error" role="alert"></p>
+<div class="row"><button id="minus" aria-label="Reducir zoom">−</button><label for="zoom">Zoom <input id="zoom" type="range" min="1" max="8" step="0.1" value="1"></label><output id="factor" for="zoom">1.0×</output><button id="plus" aria-label="Aumentar zoom">+</button><button id="reset">Restablecer encuadre</button></div>
+<p class="hint">Amplía la zona señalada con la rueda y arrastra para desplazarla. Es zoom digital: no añade detalle ni modifica el archivo original, y no mueve la cámara.</p>
+<div class="row"><label for="seek">Posición <input id="seek" type="range" min="0" max="1000" value="0" disabled></label><span id="clock"></span></div>
+<p class="hint">El directo tiene el retraso de segmentación HLS. La barra de posición está disponible para grabaciones terminadas.</p>
+</section>
+<section class="card" aria-label="Historial local">
+<h2>Grabaciones terminadas</h2><div class="row"><button id="reload">Actualizar</button><select id="files" aria-label="Grabación"><option value="">Selecciona una grabación</option></select><button id="open" disabled>Abrir grabación</button><a id="download" hidden>Descargar archivo</a></div>
+<p id="listState" class="hint"></p><p id="listError" class="error" role="status"></p>
+<p class="hint">Los tramos aparecen al cerrarse y finalizarse. Se muestran hasta 500 archivos; los anteriores no se borran. Archivo H.264 sin recodificación; el índice de stream y los FPS configurados no garantizan que la fuente sea el modo HD máximo. Sin audio ni grabación HEVC en esta versión.</p>
+</section>
+<noscript>Este visor necesita JavaScript. La grabación automática del servidor no depende de JavaScript.</noscript>
+</main>
+<script>
 'use strict';
-const $=id=>document.getElementById(id);
-let player=null,source=null,controller=null,polling=false;
-const events=[];
-function message(value){$('message').textContent=value||'';}
-async function api(path,body){
- const response=await fetch(path,{method:body===undefined?'GET':'POST',headers:body===undefined?{}:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(30000)});
- const raw=await response.text();let data;try{data=JSON.parse(raw);}catch{throw new Error('Respuesta no JSON: HTTP '+response.status);}
- if(!response.ok)throw new Error(data.error||data.msg||('HTTP '+response.status));return data;
+const $=id=>document.getElementById(id),video=$('video'),box=$('viewport');
+let player=null,mode='closed',generation=0,scale=1,x=0,y=0,drag=null,retryTimer=null,retries=0,stopped=false,statusBusy=false,listBusy=false;
+const errorText=e=>e?.message||String(e||'');
+function playerError(e){$('playerError').textContent=errorText(e);}
+async function api(url){const response=await fetch(url,{cache:'no-store',signal:AbortSignal.timeout(15000)});let data;try{data=await response.json();}catch{throw new Error('Respuesta no JSON: HTTP '+response.status);}if(!response.ok)throw new Error(data.error||('HTTP '+response.status));return data;}
+function buttons(){const active=mode!=='closed';$('pause').disabled=!active;$('close').disabled=!active;$('pause').textContent=video.paused?'Continuar':'Pausar';}
+function draw(){const w=box.clientWidth,h=box.clientHeight;x=Math.max(w-w*scale,Math.min(0,x));y=Math.max(h-h*scale,Math.min(0,y));video.style.transform=`translate(${x}px,${y}px) scale(${scale})`;$('zoom').value=scale;$('factor').textContent=scale.toFixed(1)+'×';}
+function zoom(value,cx=box.clientWidth/2,cy=box.clientHeight/2){const next=Math.max(1,Math.min(8,value));x=cx-(cx-x)*next/scale;y=cy-(cy-y)*next/scale;scale=next;draw();}
+function reset(){scale=1;x=y=0;draw();}
+$('overlay').addEventListener('wheel',e=>{e.preventDefault();const rect=box.getBoundingClientRect();zoom(scale*Math.exp(-e.deltaY*.001),e.clientX-rect.left,e.clientY-rect.top);},{passive:false});
+$('overlay').onpointerdown=e=>{drag={id:e.pointerId,x:e.clientX,y:e.clientY};$('overlay').setPointerCapture(e.pointerId);};
+$('overlay').onpointermove=e=>{if(!drag||drag.id!==e.pointerId)return;x+=e.clientX-drag.x;y+=e.clientY-drag.y;drag.x=e.clientX;drag.y=e.clientY;draw();};
+$('overlay').onpointerup=$('overlay').onpointercancel=$('overlay').onlostpointercapture=()=>{drag=null;};
+$('zoom').oninput=()=>zoom(Number($('zoom').value));$('plus').onclick=()=>zoom(scale+.5);$('minus').onclick=()=>zoom(scale-.5);$('reset').onclick=reset;
+window.addEventListener('resize',draw);document.addEventListener('fullscreenchange',draw);
+function close(){generation++;clearTimeout(retryTimer);retryTimer=null;if(player){player.destroy();player=null;}mode='closed';video.pause();video.removeAttribute('src');video.load();$('seek').disabled=true;$('seek').value=0;$('clock').textContent='';$('download').hidden=true;$('download').removeAttribute('href');$('download').removeAttribute('download');$('playback').textContent='Visor cerrado; la grabación del servidor continúa.';buttons();}
+async function begin(id){if(id!==generation||stopped)return;try{await video.play();}catch(e){if(id===generation)playerError('No se pudo reproducir. Pulsa Continuar: '+errorText(e));}buttons();}
+function seekLive(){if(player&&Number.isFinite(player.liveSyncPosition))video.currentTime=player.liveSyncPosition;else if(video.seekable.length)video.currentTime=Math.max(video.seekable.start(video.seekable.length-1),video.seekable.end(video.seekable.length-1)-1);}
+async function live(){
+ if(mode==='live'&&(player||video.src)){seekLive();return begin(generation);}
+ close();playerError('');reset();mode='live';retries=0;const id=generation,url='/api/stream/live.m3u8?track=primary';$('playback').textContent='Conectando con el directo…';buttons();
+ if(video.canPlayType('application/vnd.apple.mpegurl')){video.src=url;return begin(id);}
+ if(!window.Hls||!Hls.isSupported()){close();throw new Error('HLS no disponible: comprueba el navegador y la carga de hls.js.');}
+ const current=player=new Hls({liveSyncDurationCount:2});
+ current.on(Hls.Events.MANIFEST_PARSED,()=>{if(player===current&&generation===id)void begin(id);});
+ current.on(Hls.Events.ERROR,(_,data)=>{
+   if(!data.fatal||player!==current||generation!==id)return;
+   if(retryTimer)return;
+   if(retries>=3){close();playerError('Directo detenido tras tres intentos de recuperación: '+data.details);return;}
+   retries++;playerError(`Recuperando directo (${retries}/3): ${data.details}`);
+   retryTimer=setTimeout(()=>{retryTimer=null;if(player!==current||generation!==id)return;if(data.type===Hls.ErrorTypes.NETWORK_ERROR)current.startLoad();else if(data.type===Hls.ErrorTypes.MEDIA_ERROR)current.recoverMediaError();else{close();playerError('Error HLS no recuperable: '+data.details);}},Math.min(20000,5000*retries));
+ });
+ current.loadSource(url);current.attachMedia(video);
 }
-function renderStatus(data){
- const frames=data.session?.counters?.h264Frames||0;
- $('state').textContent=!data.active?'Sin sesión':frames>0?'Sesión con fotogramas recibidos':'Sesión creada · esperando vídeo';
- const {events:history,...status}=data;$('status').textContent=JSON.stringify(status,null,2);
+async function recordings(){
+ if(listBusy||stopped)return;listBusy=true;
+ try{const selected=$('files').value,data=await api('/api/nvr/recordings');if(!Array.isArray(data))throw new Error('Formato de historial inesperado');$('files').replaceChildren(new Option('Selecciona una grabación',''));for(const file of data){if(typeof file.id==='string')$('files').add(new Option(file.id,file.id));}if(data.some(f=>f.id===selected))$('files').value=selected;$('open').disabled=!$('files').value;$('listState').textContent=data.length?`${data.length} archivos listados (máximo 500).`:'Todavía no hay tramos terminados.';$('listError').textContent='';}catch(e){$('listError').textContent='No se pudo actualizar el historial: '+errorText(e);}finally{listBusy=false;}
 }
-async function refresh(){if(polling)return;polling=true;try{renderStatus(await api('/api/stream/status'));}catch(error){$('state').textContent='Estado no disponible';message(error.message);}finally{polling=false;}}
-async function cameras(){
- const data=await api('/api/v2/user/device_list');const payload=data?.data??data;
- const items=Array.isArray(payload?.items)?payload.items:[];
- $('devices').replaceChildren(new Option('Selecciona una cámara',''));
- for(const item of items){const uid=item.device_uid??item.uid;if(uid)$('devices').add(new Option(item.device_name||item.name||uid,uid));}
- if(!items.length)message('No hay cámaras en items. Comprueba la respuesta de device_list.');
+async function status(){
+ if(statusBusy||stopped)return;statusBusy=true;
+ try{const s=await api('/api/nvr/status');if(typeof s.recording!=='boolean'||typeof s.connected!=='boolean')throw new Error('Formato de estado inesperado');$('cameraState').textContent='Cámara: '+(s.receiving?'recibiendo vídeo':s.connected?'esperando vídeo':'desconectada');$('cameraState').className='badge '+(s.receiving?'ok':'warn');$('recordState').textContent='Grabación: '+(s.recording?'ACTIVA':'esperando / detenida');$('recordState').className='badge '+(s.recording?'ok':'warn');$('detail').textContent=`${s.camera||'Cámara pendiente'} · Destino: ${s.root} · Libre: ${Number.isFinite(s.freeBytes)?(s.freeBytes/1024**3).toFixed(1)+' GiB':'pendiente'} · ${s.format||'códec pendiente'} · ${s.fps} FPS configurados · Finalizando: ${s.finalizing||0} · ${s.currentFile||'sin tramo abierto'}`;$('serviceError').textContent='';$('recordError').textContent=s.lastError?'Último error notificado por el backend (puede ser anterior): '+s.lastError:'';}catch(e){$('cameraState').textContent='Servidor: no disponible';$('recordState').textContent='Grabación: estado desconocido';$('cameraState').className=$('recordState').className='badge warn';$('serviceError').textContent='No se pudo consultar el servicio integrado: '+errorText(e)+'. Comprueba npm start y la versión descargada; no se puede afirmar que siga grabando.';}finally{statusBusy=false;}
 }
-function closePlayer(){controller?.abort();controller=null;if(player){player.destroy();player=null;}$('video').pause();$('video').removeAttribute('src');$('video').load();$('playback').textContent='Reproductor detenido';}
-async function play(){
- closePlayer();const video=$('video');const url='/api/stream/live.m3u8?track='+encodeURIComponent($('track').value);$('playback').textContent='Cargando HLS…';
- controller=new AbortController();const signal=controller.signal;
- const begin=()=>video.play().catch(error=>{if(!signal.aborted)$('playback').textContent='Pulsa reproducir en el vídeo: '+error.message;});
- if(video.canPlayType('application/vnd.apple.mpegurl')){video.src=url;await begin();}
- else if(window.Hls&&Hls.isSupported()){
-  const current=new Hls();player=current;
-  current.on(Hls.Events.MANIFEST_PARSED,()=>{if(player===current)begin();});
-  current.on(Hls.Events.ERROR,(_,data)=>{if(player===current&&data.fatal){$('playback').textContent='Error HLS: '+data.details;current.destroy();player=null;}});
-  current.loadSource(url);current.attachMedia(video);
- }else{throw new Error('HLS no disponible: comprueba el navegador y la carga de hls.js.');}
- video.addEventListener('playing',()=>{$('playback').textContent='Reproduciendo';},{signal});
- video.addEventListener('error',()=>{$('playback').textContent='Error del reproductor';},{signal});
-}
-function bind(id,action){$(id).onclick=async()=>{$(id).disabled=true;message('');try{await action();}catch(error){message(error.message);}finally{$(id).disabled=false;}};}
-$('devices').onchange=()=>{$('uid').value=$('devices').value;};
-$('track').onchange=closePlayer;
-bind('reload',cameras);bind('play',play);bind('pause',closePlayer);
-bind('start',async()=>{const uid=$('uid').value.trim();if(!uid)throw new Error('Selecciona una cámara o introduce el UID.');closePlayer();renderStatus(await api('/api/stream/start',{uid,streamIndex:Number($('index').value)}));message('Sesión solicitada. Espera a recibir fotogramas antes de reproducir.');});
-bind('stop',async()=>{closePlayer();renderStatus(await api('/api/stream/stop',{}));});
-source=new EventSource('/api/stream/events');
-source.onopen=()=>{$('connection').textContent='Eventos conectados';};
-source.onerror=()=>{$('connection').textContent='Reconectando eventos…';};
-source.addEventListener('snapshot',event=>{try{renderStatus(JSON.parse(event.data));}catch{message('Snapshot no válido');}});
-source.addEventListener('log',event=>{try{const row=JSON.parse(event.data);events.push(row);if(events.length>100)events.shift();$('events').textContent=events.map(item=>JSON.stringify(item)).join('\n');}catch{message('Evento no válido');}});
-const timer=setInterval(refresh,10000);
-window.addEventListener('pagehide',()=>{clearInterval(timer);source.close();closePlayer();});
-refresh();cameras().catch(error=>message(error.message));
-</script></body></html>
+function bind(id,action){$(id).onclick=async()=>{try{await action();}catch(e){playerError(e);}};}
+bind('live',live);bind('close',()=>{close();playerError('');});bind('pause',()=>video.paused?begin(generation):video.pause());bind('full',async()=>{if(document.fullscreenElement)await document.exitFullscreen();else if(box.requestFullscreen)await box.requestFullscreen();else throw new Error('Pantalla completa no disponible');});bind('reload',recordings);
+$('files').onchange=()=>{$('open').disabled=!$('files').value;};
+bind('open',async()=>{const id=$('files').value;if(!id)throw new Error('Selecciona una grabación');close();playerError('');reset();mode='archive';const token=generation;video.src='/api/nvr/video?id='+encodeURIComponent(id);$('download').href=video.src;$('download').download=id.split('/').pop();$('download').hidden=false;$('playback').textContent='Grabación: '+id;buttons();await begin(token);});
+const clock=seconds=>{const n=Math.max(0,Math.floor(seconds));return `${Math.floor(n/3600).toString().padStart(2,'0')}:${Math.floor(n/60)%60<10?'0':''}${Math.floor(n/60)%60}:${(n%60).toString().padStart(2,'0')}`;};
+video.addEventListener('loadedmetadata',()=>{$('seek').disabled=mode!=='archive'||!Number.isFinite(video.duration)||video.duration<=0;});
+video.addEventListener('timeupdate',()=>{if(mode==='archive'&&Number.isFinite(video.duration)&&video.duration>0){$('seek').value=video.currentTime/video.duration*1000;$('clock').textContent=clock(video.currentTime)+' / '+clock(video.duration);}});
+$('seek').oninput=()=>{if(mode==='archive'&&Number.isFinite(video.duration)&&video.duration>0)video.currentTime=Number($('seek').value)/1000*video.duration;};
+video.addEventListener('playing',()=>{buttons();if(mode==='live'){$('playback').textContent='Directo · con el retraso de segmentación HLS';playerError('');}});
+video.addEventListener('pause',buttons);video.addEventListener('ended',buttons);video.addEventListener('error',()=>{if(mode!=='closed')playerError('Error del reproductor'+(video.error?' (código '+video.error.code+')':''));});
+const statusTimer=setInterval(status,5000),listTimer=setInterval(recordings,30000);
+window.addEventListener('pagehide',()=>{stopped=true;clearInterval(statusTimer);clearInterval(listTimer);close();});
+window.addEventListener('pageshow',e=>{if(e.persisted)window.location.reload();});
+buttons();void status();void recordings();
+</script>
+</body></html>
