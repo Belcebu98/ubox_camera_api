@@ -4,6 +4,8 @@ const path = require('node:path');
 const axios = require('axios');
 const { makeUbiaRequest, hmacSha1Base64, generateRandomString, json, writeUbiaJsonResponse, hoursAgo } = require('./helpers');
 const hls = require('./h264-hls');
+const quality = require('./stream-quality');
+const qualityApi = require('./stream-quality-api');
 // RTSP is intentionally not imported: this web-focused revision disables its auto-start race.
 const storedLogin = path.resolve(__dirname, '../../.storedLogin.json');
 const fail = (status, message) => Object.assign(new Error(message), { status });
@@ -26,6 +28,7 @@ async function body(req) {
 }
 async function GETrequest(req, res) {
   const url = new URL(req.url, 'http://localhost'); const route = url.pathname;
+  if (route === '/api/cameras/streams') return json(res, 200, await qualityApi.handle('GET', route, Object.fromEntries(url.searchParams), global.liveStreams));
   if (hls.isHlsRequest(route)) return hls.handleHlsRequest(req, res, url);
   switch (route) {
     case '/api/v2/user/device_list':
@@ -49,6 +52,8 @@ async function GETrequest(req, res) {
 async function POSTrequest(req, res) {
   const route = new URL(req.url, 'http://localhost').pathname;
   const data = await body(req);
+  if (['/api/cameras/preferred-stream', '/api/cameras/quality-probe'].includes(route)) return json(res, 200, await qualityApi.handle('POST', route, data, global.liveStreams));
+  if (qualityApi.isBusy() && route.startsWith('/api/stream/')) throw fail(409, 'Quality operation owns session');
   switch (route) {
     case '/api/user/qry/device/device_services':
     case '/api/user/cloud_list':
@@ -57,8 +62,8 @@ async function POSTrequest(req, res) {
       if (!global.userdata?.token) throw fail(503, 'UBox login unavailable');
       if (data.device !== undefined && (!data.device || Array.isArray(data.device) || typeof data.device !== 'object')) throw fail(400, 'device must be an object');
       if (data.options !== undefined && (!data.options || Array.isArray(data.options) || typeof data.options !== 'object')) throw fail(400, 'options must be an object');
-      const index = Number(data.streamIndex ?? data.options?.streamIndex ?? 0);
-      if (!Number.isInteger(index) || index < 0 || index > 3) throw fail(400, 'streamIndex must be 0..3');
+      const explicitIndex = data.streamIndex ?? data.options?.streamIndex;
+      if (explicitIndex !== undefined) { try { quality.index(explicitIndex); } catch (e) { throw fail(400, e.message); } }
       let device = data.device;
       if (!device) {
         if (typeof data.uid !== 'string' || !data.uid.trim()) throw fail(400, 'uid or device required');
@@ -74,6 +79,7 @@ async function POSTrequest(req, res) {
       }
       const uid = device.uid || device.device_uid || device.raw?.device_uid;
       if (typeof uid !== 'string' || !/^[a-zA-Z0-9_-]{1,80}$/.test(uid)) throw fail(400, 'Invalid camera UID');
+      const index = await quality.resolve(uid, explicitIndex);
       await hls.shutdownAll();
       const status = await global.liveStreams.start({ ...device, uid, streamIndex: index }, { ...data.options, streamIndex: index });
       return json(res, 200, status);

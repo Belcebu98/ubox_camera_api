@@ -77,9 +77,13 @@ const server = http.createServer(async (req, res) => {
       const body = await fs.readFile(path.join(__dirname, 'public/index.html'));
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }); return res.end(body);
     }
+    if (req.method === 'GET' && pathname === '/stream-quality.js') {
+      const script = await fs.readFile(path.join(__dirname, 'public/stream-quality.js'));
+      res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8', 'Cache-Control': 'no-store' }); return res.end(script);
+    }
     if (!pathname.startsWith('/api/')) return json(res, 404, { error: 'Not found' });
     // Local delivery must not make cloud requests on every segment or status poll.
-    if ((!pathname.startsWith('/api/stream/') || pathname === '/api/stream/start') && !validAge(global.userdata)) await login();
+    if (!pathname.startsWith('/api/cameras/') && (!pathname.startsWith('/api/stream/') || pathname === '/api/stream/start') && !validAge(global.userdata)) await login();
     return await (req.method === 'GET' ? GETrequest(req, res) : POSTrequest(req, res));
   } catch (error) {
     console.error('[HTTP]', error.message);

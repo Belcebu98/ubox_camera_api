@@ -10,7 +10,7 @@
 </style>
 </head>
 <body><main>
-<header><h1>UBox · Grabación local</h1><p class="hint">El servicio recibe y graba automáticamente. Los controles de esta página solo afectan al visor.</p></header>
+<header><h1>UBox · Grabación local</h1><p class="hint">El servicio recibe y graba automáticamente. Los controles de calidad pueden reiniciar o pausar la captura; cerrar el visor no detiene la grabación.</p></header>
 <section class="card" aria-label="Estado del servidor">
 <div class="row"><span id="cameraState" class="badge">Cámara: consultando…</span><span id="recordState" class="badge">Grabación: consultando…</span></div>
 <p id="detail" class="hint"></p><p id="serviceError" class="error" role="status"></p><p id="recordError" class="error" role="status"></p>
@@ -92,4 +92,5 @@ window.addEventListener('pagehide',()=>{stopped=true;clearInterval(statusTimer);
 window.addEventListener('pageshow',e=>{if(e.persisted)window.location.reload();});
 buttons();void status();void recordings();
 </script>
+<script src="/stream-quality.js"></script>
 </body></html>
