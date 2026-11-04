@@ -13,6 +13,7 @@ const {CameraRegistry,resolveCameraUid}=require('../src/main/camera-registry');
 const ffmpeg=require('ffmpeg-static');
 function scrub(v){if(Array.isArray(v))return v.map(scrub);if(!v||typeof v!=='object')return v;return Object.fromEntries(Object.entries(v).map(([k,x])=>[k,/token|password|cookie|authorization|prefix|^loginId$|^loginPwd$/i.test(k)?'[REDACTED]':scrub(x)]));}
 function runFFmpeg(args,timeoutMs=180000){return new Promise((resolve,reject)=>{const child=spawn(ffmpeg,args,{stdio:['ignore','ignore','pipe']});let tail='';const timer=setTimeout(()=>child.kill('SIGKILL'),timeoutMs);child.stderr.on('data',chunk=>{tail=(tail+chunk).slice(-8000);});child.on('error',error=>{clearTimeout(timer);reject(error);});child.on('close',code=>{clearTimeout(timer);code===0?resolve():reject(new Error(`FFmpeg failed (${code}): ${tail}`));});});}
+function deviceUid(device){return device?.device_uid||device?.uid||device?.deviceInfo?.device_uid||device?.info?.device_uid||null;}
 function sessionDiagnostics(session){
   const counters=session?.counters||{};
   return {rx:counters.rx||0,kcpSegments:counters.kcpSegments||0,kcpMessages:counters.kcpMessages||0,videoFrames:counters.videoFrames||0,annexBFrames:counters.annexBFrames||0,rdtFrames:counters.rdtFrames||0,h264DroppedFrames:counters.h264DroppedFrames||0,lastH264AgeMs:session?.lastH264At?Date.now()-session.lastH264At:null,lastKcpInputAgeMs:session?.lastKcpInputAt?Date.now()-session.lastKcpInputAt:null,relayEstablished:Boolean(session?.relayEstablished),relayPeer:session?.relayPeer||null,sessionState:session?.sessionState?.state??null,streamFormat:session?.streamFormat||null};
@@ -22,12 +23,12 @@ function attachProbe(session,onFrame){
   const original=session.broadcastH264.bind(session);
   session.broadcastH264=(frame,track='primary')=>{original(frame,track);if(track==='primary')onFrame(frame);};
 }
-async function probeIndex({manager,uid,index,seconds,fps,outDir}){
-  const started=Date.now();let frames=0,bytes=0,keyframes=0,firstFrameAt=null,lastFrameAt=null,sps=null,pps=null,codec=null,width=null,height=null,streamFormat=null,receiveGaps=0;
+async function probeIndex({manager,device,index,seconds,fps,outDir}){
+  const uid=deviceUid(device),started=Date.now();let frames=0,bytes=0,keyframes=0,firstFrameAt=null,lastFrameAt=null,sps=null,pps=null,codec=null,width=null,height=null,streamFormat=null,receiveGaps=0;
   const file=path.join(outDir,`stream-${index}.mp4`),temporary=file+'.partial.mp4',processing=file+'.processing.mp4';
   await fsp.unlink(temporary).catch(()=>{});await fsp.unlink(processing).catch(()=>{});
   const stream=fs.createWriteStream(temporary,{flags:'wx'}),muxer=new LiveMp4Muxer({fps});
-  await manager.start({uid},{streamIndex:index,fps,forceRestart:true});
+  await manager.start(device,{streamIndex:index,fps,forceRestart:true});
   const session=manager.session;
   attachProbe(session,frame=>{
     const now=Date.now();if(!streamFormat)streamFormat=detectStreamFormat(frame);if(streamFormat!=='h264')return;
@@ -46,9 +47,9 @@ async function probeIndex({manager,uid,index,seconds,fps,outDir}){
   const elapsed=(lastFrameAt-firstFrameAt)/1000;
   return {schemaVersion:1,uid,streamIndex:index,startedAt:new Date(started).toISOString(),durationSeconds:seconds,status:'ok',codec,streamFormat,width,height,frames,keyframes,measuredFps:elapsed>0?Number((frames/elapsed).toFixed(2)):null,videoBitrateKbps:elapsed>0?Math.round(bytes*8/elapsed/1000):null,bytes,receiveGaps,gapThresholdMs:1000,measurement:'camera-stream-frame-count',timestampSource:'client-receive-time',sampleFile:path.relative(process.cwd(),file),diagnostics,caveats:['Resolution comes from SPS and may be encoded/cropped dimensions.','FPS is receive rate during a short probe, not a guaranteed camera setting.','receiveGaps counts reception pauses over 1 second; it does not identify lost frames.','A higher stream index is not inherently higher quality.']};
 }
-async function verifyStreamActive({manager,uid,waitMs=15000}){
-  let frames=0,lastFrameAt=null,format=null;
-  await manager.start({uid},{streamIndex:0,fps:15,forceRestart:true});
+async function verifyStreamActive({manager,device,waitMs=15000}){
+  const uid=deviceUid(device);let frames=0,lastFrameAt=null,format=null;
+  await manager.start(device,{streamIndex:0,fps:15,forceRestart:true});
   const session=manager.session;
   attachProbe(session,frame=>{const now=Date.now();if(!format)format=detectStreamFormat(frame);const nals=parseNalUnits(frame);if(nals.some(n=>n.type===1||n.type===5)){frames++;lastFrameAt=now;}});
   try{await new Promise(resolve=>setTimeout(resolve,waitMs));}finally{await manager.stop();}
@@ -60,15 +61,18 @@ async function verifyStreamActive({manager,uid,waitMs=15000}){
   const registryFile=path.resolve(process.cwd(),'data/cameras.json'),registry=new CameraRegistry(registryFile);await registry.load();
   await LOGINrequest();const list=await makeUbiaRequest({},'/api/v2/user/device_list');if(![0,'0'].includes(list?.code))throw new Error('Unable to list cameras');
   const items=Array.isArray(list.data?.items)?list.data.items:[],infos=Array.isArray(list.data?.infos)?list.data.infos:[];
-  for(const device of [...items,...infos]){const uid=device?.device_uid||device?.uid;if(uid)await registry.observe(uid,'device_list');}
+  const devicesByUid=new Map();
+  for(const device of [...items,...infos]){const uid=deviceUid(device);if(uid){devicesByUid.set(uid,device);await registry.observe(uid,'device_list');}}
+  const selected=await resolveCameraUid({explicitUid:options.uid,activeSession:null,registry,items,infos});
+  const device=devicesByUid.get(selected.uid);
+  if(!device)throw new Error(`Camera ${selected.uid} was not found in device_list; cannot obtain stream credentials`);
+  await registry.observe(selected.uid,selected.source);
   const manager=new UBoxLiveStreamManager({dumpDir:path.join(options.outDir,'raw-disabled'),logDir:path.join(options.outDir,'session-logs'),enableSessionLogs:true,enableDumpFiles:false});
   const originalEmit=manager.emit.bind(manager);manager.emit=(event,detail={})=>originalEmit(event,scrub(detail));
-  const selected=await resolveCameraUid({explicitUid:options.uid,activeSession:manager.session,registry,items,infos});
-  await registry.observe(selected.uid,selected.source);
-  const liveness=await verifyStreamActive({manager,uid:selected.uid,waitMs:15000});
+  const liveness=await verifyStreamActive({manager,device,waitMs:15000});
   await registry.markStream(selected.uid,liveness.streamActive,liveness.checkedAt);
   const results=[];
-  for(const index of options.indexes){try{results.push(await probeIndex({manager,uid:selected.uid,index,seconds:options.seconds,fps:options.fps,outDir:options.outDir}));}catch(error){results.push({schemaVersion:1,uid:selected.uid,streamIndex:index,status:'error',error:error.message});}}
+  for(const index of options.indexes){try{results.push(await probeIndex({manager,device,index,seconds:options.seconds,fps:options.fps,outDir:options.outDir}));}catch(error){results.push({schemaVersion:1,uid:selected.uid,streamIndex:index,status:'error',error:error.message});}}
   const usable=results.filter(r=>r.status==='ok'&&r.width&&r.height),ranked=usable.map(r=>({...r,score:(r.width*r.height)*(r.measuredFps||0)})).sort((a,b)=>b.score-a.score);
   const report={schemaVersion:1,generatedAt:new Date().toISOString(),uid:selected.uid,uidSource:selected.source,streamCheck:liveness,indexesTested:options.indexes,probeSeconds:options.seconds,results,recommendation:ranked[0]?{streamIndex:ranked[0].streamIndex,reason:'Highest measured resolution-times-FPS among successful probes; validate visually before changing recording'}:null,warning:liveness.streamActive?null:'Initial stream check found no H.264 frames; individual index diagnostics below indicate where the session stalls.'};
   await fsp.writeFile(path.join(options.outDir,'quality-report.json'),JSON.stringify(report,null,2)+'\n');console.log(JSON.stringify(report,null,2));
