@@ -1,0 +1,11 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
+const root=path.resolve(__dirname,'..');
+const index=fs.readFileSync(path.join(root,'public/index.html'),'utf8');
+const recorder=fs.readFileSync(path.join(root,'public/recorder.html'),'utf8');
+test('index and served recorder template remain identical',()=>assert.equal(index,recorder));
+test('inline application script parses',()=>{for(const match of index.matchAll(/<script>([\s\S]*?)<\/script>/g))new vm.Script(match[1]);});
+test('automatic viewer has no manual stream mutations or event window',()=>{assert.doesNotMatch(index,/\/api\/stream\/(?:start|stop)/);assert.doesNotMatch(index,/new EventSource|id="events"|Iniciar sesión|Detener sesión/);assert.doesNotMatch(index,/method\s*:\s*['"]POST/);});
+test('viewer uses integrated backend routes',()=>{for(const endpoint of ['/api/nvr/status','/api/nvr/recordings','/api/nvr/video?id=','/api/stream/live.m3u8?track=primary'])assert.ok(index.includes(endpoint),endpoint);});
+test('zoom, playback and archive controls have unique IDs',()=>{const ids=[...index.matchAll(/\bid="([^"]+)"/g)].map(m=>m[1]);assert.equal(ids.length,new Set(ids).size);for(const id of ['viewport','video','overlay','live','pause','close','full','zoom','seek','files','download','serviceError','recordError','playerError'])assert.ok(ids.includes(id),id);});
+test('download is cleared and lifecycle has cancellation guards',()=>{assert.ok(index.includes("removeAttribute('href')"));assert.ok(index.includes('generation'));assert.ok(index.includes('clearTimeout(retryTimer)'));assert.ok(index.includes('clearInterval(listTimer)'));});
