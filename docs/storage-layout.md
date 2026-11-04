@@ -6,7 +6,7 @@ Nuevos videos: recording_dir/continuo/UID/fecha/video.mp4. Detecciones: recordin
 
 Por defecto video en E:/camaras y estado en data/recordings, logs/cameras, logs/app, data/diagnostics y data/downloads bajo el proyecto. Rutas relativas de estado resueltas desde el proyecto; deben quedar fuera del destino de video, tambien tras resolver enlaces. No se introduce retencion ni rotacion por tamano.
 
-Se siguen leyendo IDs antiguos UID/fecha/video.mp4 y nuevos continuo|detecciones/UID/fecha/video.mp4. GET /api/nvr/recordings?kind=all|continuo|detecciones filtra. El visor lista ambos; no incorpora nuevas pestanas. Un archivo en detecciones no acredita su origen ni una causa del sensor. metadataAvailable indica JSON compatible en el destino nuevo.
+Se siguen leyendo IDs antiguos UID/fecha/video.mp4 y nuevos continuo/UID/fecha/video.mp4 o detecciones/UID/fecha/video.mp4. GET /api/nvr/recordings?kind=all|continuo|detecciones filtra. El visor lista ambos; no incorpora nuevas pestanas. Un archivo en detecciones no acredita su origen ni una causa del sensor. metadataAvailable indica JSON compatible en el destino nuevo.
 
 El MP4 se finaliza primero; el JSON se publica despues. Si falla el JSON se conservan MP4 y provisional y se registra error. No hay atomicidad entre discos ni recuperacion automatica. Para publicar JSON sin sobrescritura se usa temporal + enlace duro en el destino: el sistema de archivos de metadata debe soportarlo. Contenido identico es idempotente; distinto da conflicto sin reemplazarlo.
 
