@@ -13,6 +13,10 @@ const {CameraRegistry,resolveCameraUid}=require('../src/main/camera-registry');
 const ffmpeg=require('ffmpeg-static');
 function scrub(v){if(Array.isArray(v))return v.map(scrub);if(!v||typeof v!=='object')return v;return Object.fromEntries(Object.entries(v).map(([k,x])=>[k,/token|password|cookie|authorization|prefix|^loginId$|^loginPwd$/i.test(k)?'[REDACTED]':scrub(x)]));}
 function runFFmpeg(args,timeoutMs=180000){return new Promise((resolve,reject)=>{const child=spawn(ffmpeg,args,{stdio:['ignore','ignore','pipe']});let tail='';const timer=setTimeout(()=>child.kill('SIGKILL'),timeoutMs);child.stderr.on('data',chunk=>{tail=(tail+chunk).slice(-8000);});child.on('error',error=>{clearTimeout(timer);reject(error);});child.on('close',code=>{clearTimeout(timer);code===0?resolve():reject(new Error(`FFmpeg failed (${code}): ${tail}`));});});}
+function sessionDiagnostics(session){
+  const counters=session?.counters||{};
+  return {rx:counters.rx||0,kcpSegments:counters.kcpSegments||0,kcpMessages:counters.kcpMessages||0,videoFrames:counters.videoFrames||0,annexBFrames:counters.annexBFrames||0,rdtFrames:counters.rdtFrames||0,h264DroppedFrames:counters.h264DroppedFrames||0,lastH264AgeMs:session?.lastH264At?Date.now()-session.lastH264At:null,lastKcpInputAgeMs:session?.lastKcpInputAt?Date.now()-session.lastKcpInputAt:null,relayEstablished:Boolean(session?.relayEstablished),relayPeer:session?.relayPeer||null,sessionState:session?.sessionState?.state??null,streamFormat:session?.streamFormat||null};
+}
 function attachProbe(session,onFrame){
   if(!session||typeof session.broadcastH264!=='function')throw new Error('Active UBox session is unavailable');
   const original=session.broadcastH264.bind(session);
@@ -20,7 +24,7 @@ function attachProbe(session,onFrame){
 }
 async function probeIndex({manager,uid,index,seconds,fps,outDir}){
   const started=Date.now();let frames=0,bytes=0,keyframes=0,firstFrameAt=null,lastFrameAt=null,sps=null,pps=null,codec=null,width=null,height=null,streamFormat=null,receiveGaps=0;
-  const file=path.join(outDir,`stream-${index}.mp4`),metadata=path.join(outDir,`stream-${index}.json`),temporary=file+'.partial.mp4',processing=file+'.processing.mp4';
+  const file=path.join(outDir,`stream-${index}.mp4`),temporary=file+'.partial.mp4',processing=file+'.processing.mp4';
   const stream=fs.createWriteStream(temporary,{flags:'wx'}),muxer=new LiveMp4Muxer({fps});
   await manager.start({uid},{streamIndex:index,fps,forceRestart:true});
   const session=manager.session;
@@ -34,20 +38,21 @@ async function probeIndex({manager,uid,index,seconds,fps,outDir}){
     if(sps&&pps){const result=muxer.pushAnnexB(frame);if(result){if(!bytes)stream.write(result.init);stream.write(result.fragment);bytes+=result.fragment.length;codec=result.codec;}}
   });
   try{await new Promise(resolve=>setTimeout(resolve,seconds*1000));}finally{try{await manager.stop();}finally{await new Promise((resolve,reject)=>{stream.once('finish',resolve);stream.once('error',reject);stream.end();});}}
-  if(!bytes||!sps||!pps){await fsp.unlink(temporary).catch(()=>{});throw new Error(`No usable H.264 frames on stream index ${index}`);}
+  const diagnostics=sessionDiagnostics(session);
+  if(!bytes||!sps||!pps){await fsp.unlink(temporary).catch(()=>{});return {schemaVersion:1,uid,streamIndex:index,startedAt:new Date(started).toISOString(),durationSeconds:seconds,status:'no-usable-h264',error:`No usable H.264 frames on stream index ${index}`,frames,keyframes,codec,width,height,streamFormat,bytes,receiveGaps,diagnostics};}
   await runFFmpeg(['-hide_banner','-loglevel','error','-i',temporary,'-map','0:v:0','-c:v','copy','-movflags','+faststart','-n',processing]);
   await fsp.rename(processing,file);await fsp.unlink(temporary);
   const elapsed=(lastFrameAt-firstFrameAt)/1000;
-  return {schemaVersion:1,uid,streamIndex:index,startedAt:new Date(started).toISOString(),durationSeconds:seconds,codec,streamFormat,width,height,frames,keyframes,measuredFps:elapsed>0?Number((frames/elapsed).toFixed(2)):null,videoBitrateKbps:elapsed>0?Math.round(bytes*8/elapsed/1000):null,bytes,receiveGaps,gapThresholdMs:1000,measurement:'camera-stream-frame-count',timestampSource:'client-receive-time',sampleFile:path.relative(process.cwd(),file),caveats:['Resolution comes from SPS and may be encoded/cropped dimensions.','FPS is receive rate during a short probe, not a guaranteed camera setting.','receiveGaps counts reception pauses over 1 second; it does not identify lost frames.','A higher stream index is not inherently higher quality.']};
+  return {schemaVersion:1,uid,streamIndex:index,startedAt:new Date(started).toISOString(),durationSeconds:seconds,status:'ok',codec,streamFormat,width,height,frames,keyframes,measuredFps:elapsed>0?Number((frames/elapsed).toFixed(2)):null,videoBitrateKbps:elapsed>0?Math.round(bytes*8/elapsed/1000):null,bytes,receiveGaps,gapThresholdMs:1000,measurement:'camera-stream-frame-count',timestampSource:'client-receive-time',sampleFile:path.relative(process.cwd(),file),diagnostics,caveats:['Resolution comes from SPS and may be encoded/cropped dimensions.','FPS is receive rate during a short probe, not a guaranteed camera setting.','receiveGaps counts reception pauses over 1 second; it does not identify lost frames.','A higher stream index is not inherently higher quality.']};
 }
-async function verifyStreamActive({manager,uid,waitMs=10000}){
-  const started=Date.now();let frames=0,lastFrameAt=null,format=null;
+async function verifyStreamActive({manager,uid,waitMs=15000}){
+  let frames=0,lastFrameAt=null,format=null;
   await manager.start({uid},{streamIndex:0,fps:15,forceRestart:true});
   const session=manager.session;
   attachProbe(session,frame=>{const now=Date.now();if(!format)format=detectStreamFormat(frame);const nals=parseNalUnits(frame);if(nals.some(n=>n.type===1||n.type===5)){frames++;lastFrameAt=now;}});
   try{await new Promise(resolve=>setTimeout(resolve,waitMs));}finally{await manager.stop();}
   const active=frames>0&&lastFrameAt!==null&&Date.now()-lastFrameAt<5000;
-  return {uid,streamActive:active,frames,format,checkedAt:new Date().toISOString(),waitMs,lastFrameAgeMs:lastFrameAt?Date.now()-lastFrameAt:null,meaning:active?'Camera sent at least one H.264 picture frame during the check':'No H.264 picture frame was received; stream is not confirmed active'};
+  return {uid,streamActive:active,frames,format,checkedAt:new Date().toISOString(),waitMs,lastFrameAgeMs:lastFrameAt?Date.now()-lastFrameAt:null,diagnostics:sessionDiagnostics(session),meaning:active?'Camera sent at least one H.264 picture frame during the check':'No H.264 picture frame was received during the initial check; individual stream indexes will still be tested'};
 }
 (async()=>{
   const options=parseArgs(process.argv.slice(2));await fsp.mkdir(options.outDir,{recursive:true});
@@ -59,12 +64,11 @@ async function verifyStreamActive({manager,uid,waitMs=10000}){
   const originalEmit=manager.emit.bind(manager);manager.emit=(event,detail={})=>originalEmit(event,scrub(detail));
   const selected=await resolveCameraUid({explicitUid:options.uid,activeSession:manager.session,registry,items,infos});
   await registry.observe(selected.uid,selected.source);
-  const liveness=await verifyStreamActive({manager,uid:selected.uid,waitMs:Math.min(10000,Math.max(3000,options.seconds*1000))});
+  const liveness=await verifyStreamActive({manager,uid:selected.uid,waitMs:15000});
   await registry.markStream(selected.uid,liveness.streamActive,liveness.checkedAt);
-  if(!liveness.streamActive){const report={schemaVersion:1,generatedAt:new Date().toISOString(),uid:selected.uid,uidSource:selected.source,streamCheck:liveness,indexesTested:[],results:[],recommendation:null,warning:'Stream is not active; quality indexes were not tested.'};await fsp.writeFile(path.join(options.outDir,'quality-report.json'),JSON.stringify(report,null,2)+'\n');console.log(JSON.stringify(report,null,2));return;}
   const results=[];
-  for(const index of options.indexes){try{results.push(await probeIndex({manager,uid:selected.uid,index,seconds:options.seconds,fps:options.fps,outDir:options.outDir}));}catch(error){results.push({streamIndex:index,error:error.message,uid:selected.uid});}}
-  const usable=results.filter(r=>!r.error&&r.width&&r.height),ranked=usable.map(r=>({...r,score:(r.width*r.height)*(r.measuredFps||0)})).sort((a,b)=>b.score-a.score);
-  const report={schemaVersion:1,generatedAt:new Date().toISOString(),uid:selected.uid,uidSource:selected.source,streamCheck:liveness,indexesTested:options.indexes,probeSeconds:options.seconds,results,recommendation:ranked[0]?{streamIndex:ranked[0].streamIndex,reason:'Highest measured resolution-times-FPS among successful probes; validate visually before changing recording'}:null,warning:'This probe does not increase camera quality and does not change recording_stream_index.'};
+  for(const index of options.indexes){try{results.push(await probeIndex({manager,uid:selected.uid,index,seconds:options.seconds,fps:options.fps,outDir:options.outDir}));}catch(error){results.push({schemaVersion:1,uid:selected.uid,streamIndex:index,status:'error',error:error.message});}}
+  const usable=results.filter(r=>r.status==='ok'&&r.width&&r.height),ranked=usable.map(r=>({...r,score:(r.width*r.height)*(r.measuredFps||0)})).sort((a,b)=>b.score-a.score);
+  const report={schemaVersion:1,generatedAt:new Date().toISOString(),uid:selected.uid,uidSource:selected.source,streamCheck:liveness,indexesTested:options.indexes,probeSeconds:options.seconds,results,recommendation:ranked[0]?{streamIndex:ranked[0].streamIndex,reason:'Highest measured resolution-times-FPS among successful probes; validate visually before changing recording'}:null,warning:liveness.streamActive?null:'Initial stream check found no H.264 frames; individual index diagnostics below indicate where the session stalls.'};
   await fsp.writeFile(path.join(options.outDir,'quality-report.json'),JSON.stringify(report,null,2)+'\n');console.log(JSON.stringify(report,null,2));
 })().catch(error=>{console.error(error.message);process.exitCode=1;});
