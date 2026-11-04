@@ -13,14 +13,18 @@ const {CameraRegistry,resolveCameraUid}=require('../src/main/camera-registry');
 const ffmpeg=require('ffmpeg-static');
 function scrub(v){if(Array.isArray(v))return v.map(scrub);if(!v||typeof v!=='object')return v;return Object.fromEntries(Object.entries(v).map(([k,x])=>[k,/token|password|cookie|authorization|prefix|^loginId$|^loginPwd$/i.test(k)?'[REDACTED]':scrub(x)]));}
 function runFFmpeg(args,timeoutMs=180000){return new Promise((resolve,reject)=>{const child=spawn(ffmpeg,args,{stdio:['ignore','ignore','pipe']});let tail='';const timer=setTimeout(()=>child.kill('SIGKILL'),timeoutMs);child.stderr.on('data',chunk=>{tail=(tail+chunk).slice(-8000);});child.on('error',error=>{clearTimeout(timer);reject(error);});child.on('close',code=>{clearTimeout(timer);code===0?resolve():reject(new Error(`FFmpeg failed (${code}): ${tail}`));});});}
+function attachProbe(session,onFrame){
+  if(!session||typeof session.broadcastH264!=='function')throw new Error('Active UBox session is unavailable');
+  const original=session.broadcastH264.bind(session);
+  session.broadcastH264=(frame,track='primary')=>{original(frame,track);if(track==='primary')onFrame(frame);};
+}
 async function probeIndex({manager,uid,index,seconds,fps,outDir}){
   const started=Date.now();let frames=0,bytes=0,keyframes=0,firstFrameAt=null,lastFrameAt=null,sps=null,pps=null,codec=null,width=null,height=null,streamFormat=null,receiveGaps=0;
   const file=path.join(outDir,`stream-${index}.mp4`),metadata=path.join(outDir,`stream-${index}.json`),temporary=file+'.partial.mp4',processing=file+'.processing.mp4';
   const stream=fs.createWriteStream(temporary,{flags:'wx'}),muxer=new LiveMp4Muxer({fps});
-  const session=await manager.start({uid},{streamIndex:index,fps,forceRestart:true});
-  const original=session.broadcastH264.bind(session);
-  session.broadcastH264=(frame,track='primary')=>{
-    original(frame,track);if(track!=='primary')return;
+  await manager.start({uid},{streamIndex:index,fps,forceRestart:true});
+  const session=manager.session;
+  attachProbe(session,frame=>{
     const now=Date.now();if(!streamFormat)streamFormat=detectStreamFormat(frame);if(streamFormat!=='h264')return;
     const nals=parseNalUnits(frame),picture=nals.find(n=>n.type===1||n.type===5);
     if(picture){frames++;if(firstFrameAt===null)firstFrameAt=now;else if(now-lastFrameAt>1000)receiveGaps++;lastFrameAt=now;}
@@ -28,7 +32,7 @@ async function probeIndex({manager,uid,index,seconds,fps,outDir}){
     if(spsNal){sps=Buffer.from(spsNal.data);const dimensions=parseSpsDimensions(sps);width=dimensions.width;height=dimensions.height;}
     if(ppsNal)pps=Buffer.from(ppsNal.data);if(key)keyframes++;
     if(sps&&pps){const result=muxer.pushAnnexB(frame);if(result){if(!bytes)stream.write(result.init);stream.write(result.fragment);bytes+=result.fragment.length;codec=result.codec;}}
-  };
+  });
   try{await new Promise(resolve=>setTimeout(resolve,seconds*1000));}finally{try{await manager.stop();}finally{await new Promise((resolve,reject)=>{stream.once('finish',resolve);stream.once('error',reject);stream.end();});}}
   if(!bytes||!sps||!pps){await fsp.unlink(temporary).catch(()=>{});throw new Error(`No usable H.264 frames on stream index ${index}`);}
   await runFFmpeg(['-hide_banner','-loglevel','error','-i',temporary,'-map','0:v:0','-c:v','copy','-movflags','+faststart','-n',processing]);
@@ -38,9 +42,9 @@ async function probeIndex({manager,uid,index,seconds,fps,outDir}){
 }
 async function verifyStreamActive({manager,uid,waitMs=10000}){
   const started=Date.now();let frames=0,lastFrameAt=null,format=null;
-  const session=await manager.start({uid},{streamIndex:0,fps:15,forceRestart:true});
-  const original=session.broadcastH264.bind(session);
-  session.broadcastH264=(frame,track='primary')=>{original(frame,track);if(track!=='primary')return;const now=Date.now();if(!format)format=detectStreamFormat(frame);const nals=parseNalUnits(frame);if(nals.some(n=>n.type===1||n.type===5)){frames++;lastFrameAt=now;}};
+  await manager.start({uid},{streamIndex:0,fps:15,forceRestart:true});
+  const session=manager.session;
+  attachProbe(session,frame=>{const now=Date.now();if(!format)format=detectStreamFormat(frame);const nals=parseNalUnits(frame);if(nals.some(n=>n.type===1||n.type===5)){frames++;lastFrameAt=now;}});
   try{await new Promise(resolve=>setTimeout(resolve,waitMs));}finally{await manager.stop();}
   const active=frames>0&&lastFrameAt!==null&&Date.now()-lastFrameAt<5000;
   return {uid,streamActive:active,frames,format,checkedAt:new Date().toISOString(),waitMs,lastFrameAgeMs:lastFrameAt?Date.now()-lastFrameAt:null,meaning:active?'Camera sent at least one H.264 picture frame during the check':'No H.264 picture frame was received; stream is not confirmed active'};
