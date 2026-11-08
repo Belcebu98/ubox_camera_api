@@ -18,6 +18,7 @@ async function main(){
   const port=Number(process.env.server_port||8020),fps=Number(process.env.recording_fps||15),seconds=Number(process.env.recording_segment_seconds||300),reserve=Number(process.env.recording_min_free_gb??2)*1024**3,index=Number(process.env.recording_stream_index||0);
   if(!Number.isInteger(port)||port<1||port>65535||!Number.isFinite(fps)||fps<1||fps>60||!Number.isFinite(seconds)||seconds<10||seconds>3600||!Number.isFinite(reserve)||reserve<0||!Number.isInteger(index)||index<0||index>3)throw new Error('Invalid recording/server configuration');
   process.env.server_port=String(port);
+  let selectedUid=process.env.recording_camera_uid||'';
   const manager=global.liveStreams=new UBoxLiveStreamManager({dumpDir:path.join(root,'raw-disabled'),logDir:store.paths.cameraLogs,enableSessionLogs:true,enableDumpFiles:false});
   const emit=manager.emit.bind(manager),log=manager.writeSessionLog.bind(manager),openLog=manager.openSessionLog.bind(manager);
   manager.openSessionLog=session=>{manager.logDir=store.cameraLogDir(session.identity.uid);return openLog(session);};
@@ -58,7 +59,7 @@ async function main(){
   async function desiredIndex(cameraUid){return (await quality.get(cameraUid)).selectedStreamIndex??index;}
   async function validateQualityCamera(cameraUid){
     if(stopping)throw Object.assign(new Error('Server shutting down'),{status:503});
-    const configured=process.env.recording_camera_uid||device?.uid||session?.identity.uid;
+    const configured=selectedUid||device?.uid||session?.identity.uid;
     if(!configured)throw Object.assign(new Error('Recording camera not yet selected'),{status:409});
     if(configured!==cameraUid)throw Object.assign(new Error('Select configured recording camera'),{status:409});
   }
@@ -80,14 +81,31 @@ async function main(){
     qualityJob=managedQuality(cameraUid,action).finally(()=>{qualityJob=null;});return qualityJob;
   }
   global.streamQualityController={validate:validateQualityCamera,apply:cameraUid=>trackedQuality(cameraUid,async()=>({applied:true})),probe:(cameraUid,seconds)=>trackedQuality(cameraUid,()=>qualityApi.runProbe(cameraUid,seconds))};
+  function readBody(req){return new Promise((resolve,reject)=>{let data='';req.on('data',chunk=>{data+=chunk;if(data.length>1024*1024){reject(Object.assign(new Error('Request body too large'),{status:413}));req.destroy();return;}});req.on('end',()=>{try{resolve(data?JSON.parse(data):{});}catch(error){reject(Object.assign(new Error('Invalid JSON body'),{status:400}));}});req.on('error',reject);});}
+  async function selectCamera(uid){
+    if(!uid||typeof uid!=='string')throw Object.assign(new Error('Camera UID is required'),{status:400});
+    await login();
+    let response=await makeUbiaRequest({},'/api/v2/user/device_list');
+    if(![0,'0'].includes(response?.code)){await login(true);response=await makeUbiaRequest({},'/api/v2/user/device_list');}
+    const items=Array.isArray(response?.data?.items)?response.data.items:[],infos=Array.isArray(response?.data?.infos)?response.data.infos:[],matches=x=>(x?.device_uid||x?.uid)===uid;
+    if(!items.some(matches)&&!infos.some(matches))throw Object.assign(new Error('Camera not found'),{status:404});
+    selectedUid=uid;
+    warmRequest?.destroy();warmRequest=null;
+    attach(null);
+    try{await hls.shutdownAll();}catch(error){report(error);}
+    try{await manager.stop();}catch(error){report(error);}
+    lastStart=0;
+    schedule();
+    return {selectedUid:uid};
+  }
   async function chooseCamera(){
     await login();let r=await makeUbiaRequest({},'/api/v2/user/device_list');if(![0,'0'].includes(r?.code)){if(Number(r?.code)>=500)throw new Error('UBox unavailable');await login(true);r=await makeUbiaRequest({},'/api/v2/user/device_list');}if(![0,'0'].includes(r?.code))throw new Error('Unable to list cameras');telemetry.observe(r);
-    const items=Array.isArray(r.data?.items)?r.data.items:[],infos=Array.isArray(r.data?.infos)?r.data.infos:[],uid=process.env.recording_camera_uid||(items.length===1?items[0].device_uid||items[0].uid:'');if(!uid)throw new Error('Set recording_camera_uid: exactly one recording camera must be selected');const match=x=>(x?.device_uid||x?.uid)===uid,item=items.find(match),info=infos.find(match);if(!item&&!info)throw new Error('Configured camera not found');device={...item,...info,uid,raw:{...item,...info}};
+    const items=Array.isArray(r.data?.items)?r.data.items:[],infos=Array.isArray(r.data?.infos)?r.data.infos:[],uid=selectedUid||(items.length===1?items[0].device_uid||items[0].uid:'');if(!uid)throw new Error('Set recording_camera_uid or select a camera in /multi-camera');const match=x=>(x?.device_uid||x?.uid)===uid,item=items.find(match),info=infos.find(match);if(!item&&!info)throw new Error('Configured camera not found');device={...item,...info,uid,raw:{...item,...info}};
   }
   async function warm(){if(warming||stopping||!session?.streamFormat||!session.h264Tracks.get('primary').frames)return;warming=true;try{await new Promise((resolve,reject)=>{const req=warmRequest=http.get(`http://127.0.0.1:${port}/api/stream/live.m3u8?track=primary`,res=>{res.resume();res.once('end',()=>res.statusCode===200?resolve():reject(new Error(`HLS HTTP ${res.statusCode}`)));res.on('error',reject);});req.setTimeout(25000,()=>req.destroy(new Error('HLS preparation timeout')));req.on('error',reject);});}catch(e){if(!stopping)report(e);}finally{warmRequest=null;warming=false;}}
   async function tick(){if(stopping||qualityPaused)return;try{const disk=await fsp.statfs(root);freeBytes=Number(disk.bavail)*Number(disk.bsize);if(freeBytes<reserve){if(current)finalize();lastError='Recording paused: low disk space';}if(!manager.session){if(Date.now()-lastStart<15000)return;lastStart=Date.now();await chooseCamera();if(stopping||qualityPaused)return;await manager.start(device,{streamIndex:await desiredIndex(device.uid),fps});}if(stopping)return;if(session!==manager.session)attach(manager.session);const quiet=lastFrame?Date.now()-lastFrame:Date.now()-lastStart;if(session&&quiet>30000&&Date.now()-lastStart>30000){lastStart=Date.now();await hls.shutdownAll();await manager.stop();attach(null);return;}void warm();}catch(e){if(!stopping)report(e);}}
   function schedule(){if(!tickJob&&!stopping)tickJob=tick().finally(()=>{tickJob=null;});}
-  function status(){return {camera:session?.identity.uid||null,connected:Boolean(manager.session),receiving:Boolean(lastFrame&&Date.now()-lastFrame<5000),recording:Boolean(current&&!current.failed),currentFile:current?.id||null,root,storagePaths:store.paths,freeBytes,lastError,finalizing:jobs.size,format:session?.streamFormat||null,fps,streamIndex:session?.identity.streamIndex??null,qualityPaused,configuredFallbackIndex:index};}
+  function status(){return {camera:session?.identity.uid||null,selectedUid,connected:Boolean(manager.session),receiving:Boolean(lastFrame&&Date.now()-lastFrame<5000),recording:Boolean(current&&!current.failed),currentFile:current?.id||null,root,storagePaths:store.paths,freeBytes,lastError,finalizing:jobs.size,format:session?.streamFormat||null,fps,streamIndex:session?.identity.streamIndex??null,qualityPaused,configuredFallbackIndex:index};}
   async function video(req,res,url){
     let file;try{file=await store.resolveVideo(url.searchParams.get('id')||'');}catch(e){e.status=e.code==='ENOENT'?404:400;throw e;}const st=await fsp.stat(file);let start=0,end=st.size-1,code=200;const invalid=()=>{res.writeHead(416,{'Content-Range':`bytes */${st.size}`});res.end();};
     if(req.headers.range){const m=/^bytes=(\d*)-(\d*)$/.exec(req.headers.range);if(!m||(!m[1]&&!m[2]))return invalid();if(!m[1])start=Math.max(0,st.size-Number(m[2]));else{start=Number(m[1]);if(m[2])end=Math.min(end,Number(m[2]));}if(!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||start>end||start>=st.size)return invalid();code=206;}
@@ -98,8 +116,8 @@ async function main(){
   const server=http.createServer(async(req,res)=>{try{
     const url=new URL(req.url,'http://localhost'),route=url.pathname;if(stopping)return json(res,503,{error:'Server shutting down'});if(!['GET','HEAD','POST'].includes(req.method)){res.setHeader('Allow','GET, HEAD, POST');return json(res,405,{error:'Method not allowed'});}
     if(route==='/stream-quality.js'&&['GET','HEAD'].includes(req.method))return await staticFile(req,res,'stream-quality.js','application/javascript; charset=utf-8');
-    if(req.method==='POST'){if(route.startsWith('/api/stream/')||route.startsWith('/api/nvr/'))return json(res,409,{error:'Automatic recorder owns the camera session; manual stream mutations are disabled'});if(!route.startsWith('/api/'))return json(res,404,{error:'Not found'});if(!route.startsWith('/api/cameras/'))await login();return await POSTrequest(req,res);}
-    if(['/', '/index.html'].includes(route))return await staticFile(req,res,'recorder.html','text/html; charset=utf-8',true);if(route==='/battery-panel.js')return await staticFile(req,res,'battery-panel.js','application/javascript; charset=utf-8');if(route==='/api/nvr/video')return await video(req,res,url);if(req.method==='HEAD')return json(res,405,{error:'HEAD is supported for static files and recordings only'});
+    if(req.method==='POST'){if(route.startsWith('/api/stream/')||route.startsWith('/api/nvr/')){if(route==='/api/nvr/select-camera'){const body=await readBody(req);return json(res,200,await selectCamera(body.uid));}return json(res,409,{error:'Automatic recorder owns the camera session; manual stream mutations are disabled'});}if(!route.startsWith('/api/'))return json(res,404,{error:'Not found'});if(!route.startsWith('/api/cameras/'))await login();return await POSTrequest(req,res);}
+    if(['/', '/index.html'].includes(route))return await staticFile(req,res,'recorder.html','text/html; charset=utf-8',true);if(route==='/battery-panel.js')return await staticFile(req,res,'battery-panel.js','application/javascript; charset=utf-8');if(route==='/multi-camera')return await staticFile(req,res,'multi-camera.html','text/html; charset=utf-8');if(route==='/multi-camera.js')return await staticFile(req,res,'multi-camera.js','application/javascript; charset=utf-8');if(route==='/api/nvr/video')return await video(req,res,url);if(req.method==='HEAD')return json(res,405,{error:'HEAD is supported for static files and recordings only'});
     if(route==='/api/nvr/cameras')return json(res,200,{...telemetry.snapshot(),activeCameraUid:session?.identity.uid||null});if(route==='/api/nvr/status')return json(res,200,status());
     if(route==='/api/nvr/recordings'){const kind=url.searchParams.get('kind')||'all';if(!['all','continuo','detecciones'].includes(kind))return json(res,400,{error:'Invalid kind'});return json(res,200,(await store.list({kind})).slice(0,500));}
     if(hls.isHlsRequest(route))return await hls.handleHlsRequest(req,res,url);if(route.startsWith('/api/')){if(!route.startsWith('/api/stream/')&&!route.startsWith('/api/cameras/'))await login();return await GETrequest(req,res);}return json(res,404,{error:'Not found'});
