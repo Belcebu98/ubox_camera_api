@@ -99,7 +99,20 @@ async function main(){
     return {selectedUid:uid};
   }
   async function chooseCamera(){
-    await login();let r=await makeUbiaRequest({},'/api/v2/user/device_list');if(![0,'0'].includes(r?.code)){if(Number(r?.code)>=500)throw new Error('UBox unavailable');await login(true);r=await makeUbiaRequest({},'/api/v2/user/device_list');}if(![0,'0'].includes(r?.code))throw new Error('Unable to list cameras');telemetry.observe(r);
+    await login();let r=await makeUbiaRequest({},'/api/v2/user/device_list');
+    if(![0,'0'].includes(r?.code)){
+      const code=Number(r?.code);
+      if(code>=500){
+        console.error('[UBox] device_list devolvió',code,r?.message||'');
+        await new Promise(resolve=>setTimeout(resolve,3000));
+        await login(true);
+        r=await makeUbiaRequest({},'/api/v2/user/device_list');
+      } else {
+        await login(true);
+        r=await makeUbiaRequest({},'/api/v2/user/device_list');
+      }
+    }
+    if(![0,'0'].includes(r?.code))throw new Error('Unable to list cameras');telemetry.observe(r);
     const items=Array.isArray(r.data?.items)?r.data.items:[],infos=Array.isArray(r.data?.infos)?r.data.infos:[],uid=selectedUid||(items.length===1?items[0].device_uid||items[0].uid:'');if(!uid)throw new Error('Set recording_camera_uid or select a camera in /multi-camera');const match=x=>(x?.device_uid||x?.uid)===uid,item=items.find(match),info=infos.find(match);if(!item&&!info)throw new Error('Configured camera not found');device={...item,...info,uid,raw:{...item,...info}};
   }
   async function warm(){if(warming||stopping||!session?.streamFormat||!session.h264Tracks.get('primary').frames)return;warming=true;try{await new Promise((resolve,reject)=>{const req=warmRequest=http.get(`http://127.0.0.1:${port}/api/stream/live.m3u8?track=primary`,res=>{res.resume();res.once('end',()=>res.statusCode===200?resolve():reject(new Error(`HLS HTTP ${res.statusCode}`)));res.on('error',reject);});req.setTimeout(25000,()=>req.destroy(new Error('HLS preparation timeout')));req.on('error',reject);});}catch(e){if(!stopping)report(e);}finally{warmRequest=null;warming=false;}}
@@ -108,7 +121,7 @@ async function main(){
   function status(){return {camera:session?.identity.uid||null,selectedUid,connected:Boolean(manager.session),receiving:Boolean(lastFrame&&Date.now()-lastFrame<5000),recording:Boolean(current&&!current.failed),currentFile:current?.id||null,root,storagePaths:store.paths,freeBytes,lastError,finalizing:jobs.size,format:session?.streamFormat||null,fps,streamIndex:session?.identity.streamIndex??null,qualityPaused,configuredFallbackIndex:index};}
   async function video(req,res,url){
     let file;try{file=await store.resolveVideo(url.searchParams.get('id')||'');}catch(e){e.status=e.code==='ENOENT'?404:400;throw e;}const st=await fsp.stat(file);let start=0,end=st.size-1,code=200;const invalid=()=>{res.writeHead(416,{'Content-Range':`bytes */${st.size}`});res.end();};
-    if(req.headers.range){const m=/^bytes=(\d*)-(\d*)$/.exec(req.headers.range);if(!m||(!m[1]&&!m[2]))return invalid();if(!m[1])start=Math.max(0,st.size-Number(m[2]));else{start=Number(m[1]);if(m[2])end=Math.min(end,Number(m[2]));}if(!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||start>end||start>=st.size)return invalid();code=206;}
+    if(req.headers.range){const m=/^bytes=(\d*)-(\d*)$/.exec(req.headers.range);if(!m||(!m[1]&&!m[2]))return invalid();if(!m[1])start=Math.max(0,st.size-Number(m[2]));else{start=Number(m[1]);if(m[2])end=Math.min(end,st.size-1);}if(!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||start>end||start>=st.size)return invalid();code=206;}
     res.writeHead(code,{'Content-Type':'video/mp4','Content-Length':end-start+1,'Accept-Ranges':'bytes','Cache-Control':'no-store',...(code===206?{'Content-Range':`bytes ${start}-${end}/${st.size}`}:{})});if(req.method==='HEAD')return res.end();const stream=fs.createReadStream(file,{start,end});stream.on('error',()=>res.destroy());res.on('close',()=>stream.destroy());stream.pipe(res);
   }
   function json(res,code,data){if(res.destroyed||res.writableEnded)return;res.writeHead(code,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(data));}
