@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cámaras UBox</title>
+<style>
+:root{color-scheme:dark;--bg:#0f1115;--card:#171a21;--line:#2a2f3a;--text:#e8eaed;--muted:#9aa4b2;--ok:#37d67a;--warn:#ffb020;--bad:#ff5c5c}
+*{box-sizing:border-box}body{margin:0;font:15px/1.45 system-ui,sans-serif;background:var(--bg);color:var(--text)}
+header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 22px;border-bottom:1px solid var(--line)}
+h1{margin:0;font-size:20px}#recorder-status{color:var(--muted);font-size:14px}
+main{padding:22px;max-width:1500px;margin:0 auto}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px}
+.camera{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:10px}
+.camera.active{border-color:var(--ok);box-shadow:0 0 0 1px var(--ok)}
+.uid{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--muted);word-break:break-all}
+.meta{display:flex;flex-wrap:wrap;gap:8px;font-size:13px;color:var(--muted)}
+.badge{padding:3px 8px;border-radius:999px;background:#222733;border:1px solid var(--line)}
+.badge.ok{color:var(--ok)}.badge.warn{color:var(--warn)}.badge.bad{color:var(--bad)}
+button{background:#2563eb;color:#fff;border:0;border-radius:8px;padding:9px 12px;font-weight:600;cursor:pointer}
+button:disabled{opacity:.55;cursor:not-allowed}
+#error{color:var(--bad);margin-top:16px;white-space:pre-wrap}
+</style>
+</head>
+<body>
+<header>
+<h1>Cámaras UBox</h1>
+<div id="recorder-status">Cargando estado…</div>
+</header>
+<main>
+<div id="grid" class="grid"></div>
+<p id="error"></p>
+</main>
+<script src="/multi-camera.js"></script>
+</body>
+</html>

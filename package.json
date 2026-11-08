@@ -4,7 +4,10 @@
   "description": "An API for connecting to uBox cameras.",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node recorder-server.js",
+    "start:legacy": "node server.js",
+    "start:recorder": "node recorder-server.js",
+    "test": "node --test tests/*.test.js"
   },
   "repository": {
     "type": "git",
